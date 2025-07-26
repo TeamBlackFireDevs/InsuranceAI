@@ -1,4 +1,3 @@
-from fastapi import FastAPI
 from main import app
 from asgiref.compatibility import guarantee_single_callable
 
