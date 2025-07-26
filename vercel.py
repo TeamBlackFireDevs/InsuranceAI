@@ -1,6 +1,6 @@
 from fastapi import FastAPI
-from main import app  # your FastAPI app
-from mangum import Mangum
+from main import app
+from asgiref.compatibility import guarantee_single_callable
 
-# Wrap FastAPI app with AWS Lambda-compatible adapter
-handler = Mangum(app)
+# Convert FastAPI ASGI app to something Vercel's Python runtime understands
+vercel_app = guarantee_single_callable(app)
