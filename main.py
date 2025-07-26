@@ -11,8 +11,8 @@ from pdfminer.high_level import extract_text
 # Initialize FastAPI app
 app = FastAPI(title="Insurance Claims Processing API")
 
-# Get HuggingFace token (your original working setup)
-HF_TOKEN = os.getenv("HF_TOKEN")
+# Get LLM API Token
+LLM_Key = os.getenv("LLM_Key")
 
 class QueryRequest(BaseModel):
     query: str
@@ -104,14 +104,14 @@ def find_relevant_chunks_keyword_based(question: str, chunks: List[str], top_k: 
 def call_hf_api(messages: List[Dict], max_tokens: int = 800) -> str:
     """Call HuggingFace API using your original working setup"""
     
-    if not HF_TOKEN:
-        raise HTTPException(status_code=500, detail="HF_TOKEN environment variable not set")
+    if not LLM_Key:
+        raise HTTPException(status_code=500, detail="LLM_Key environment variable not set")
     
     # Your original working API setup
     url = "https://api.novita.ai/v3/openai/chat/completions"
     
     headers = {
-        "Authorization": f"Bearer {HF_TOKEN}",  # Your original working format
+        "Authorization": f"Bearer {LLM_Key}",  # Your original working format
         "Content-Type": "application/json"
     }
     
