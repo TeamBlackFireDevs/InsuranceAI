@@ -1,71 +1,44 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from typing import Any, Dict
-from openai import OpenAI
+import requests
 import os
-import json
 
-# Initialize FastAPI app
 app = FastAPI()
 
-# Get OpenAI API key from environment variables
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-client = OpenAI(api_key=OPENAI_API_KEY)
+HF_TOKEN = os.getenv("HF_TOKEN")  # Set this in Vercel env vars
+MODEL_ID = "mistralai/Mistral-7B-Instruct-v0.1"
 
-# Request model
+headers = {
+    "Authorization": f"Bearer {HF_TOKEN}"
+}
+
+API_URL = f"https://api-inference.huggingface.co/models/{MODEL_ID}"
+
 class QueryRequest(BaseModel):
     query: str
 
-# Core logic to query OpenAI LLM
-def query_llm(user_text: str) -> Dict[str, Any]:
-    prompt = (
-        "You are an insurance claim processing assistant. "
-        "Given the following customer query, extract all relevant details (age, condition, policy duration, location, etc), "
-        "retrieve matching rules from this Bajaj Allianz health insurance policy (waiting periods, exclusions, etc). "
-        "Then output a JSON with: decision (approved/rejected/undetermined), amount (if applicable), and a justification "
-        "(mapping each decision to the clause/rule). Use this format:\n\n"
-        "{\n"
-        '  "decision": "APPROVED",\n'
-        '  "amount": "Up to Sum Insured as per Policy Schedule",\n'
-        '  "justification": [\n'
-        '    {\n'
-        '      "criteria": "—",\n'
-        '      "status": "PASSED/FAILED",\n'
-        '      "explanation": "—",\n'
-        '      "clause_reference": "—"\n'
-        '    }\n'
-        "  ]\n"
-        "}\n\n"
-        "Customer Query:\n"
-        f"{user_text}\n"
-        "Be concise and specific. If information is missing, set 'decision' to 'UNDETERMINED' and explain what is needed."
-    )
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a helpful insurance claim processor."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.3,
-            max_tokens=450,
-        )
-
-        content = response.choices[0].message.content
-        start = content.find("{")
-        end = content.rfind("}") + 1
-        result_json = json.loads(content[start:end])
-        return result_json
-
-    except Exception as e:
-        return {
-            "decision": "UNDETERMINED",
-            "justification": f"Could not parse LLM response: {str(e)}"
-        }
-
-# API route
 @app.post("/api/v1/insurance-claim")
 async def process_claim(req: QueryRequest):
-    result = query_llm(req.query)
-    return result
+    prompt = (
+        "You are an insurance claim processing assistant. "
+        "Given the customer query, provide a decision (approved/rejected/undetermined) "
+        "with explanation in JSON format.\n\n"
+        f"Customer Query: {req.query}\n\n"
+    )
+
+    payload = {
+        "inputs": prompt,
+        "parameters": {"temperature": 0.3, "max_new_tokens": 300}
+    }
+
+    response = requests.post(API_URL, headers=headers, json=payload)
+
+    try:
+        output_text = response.json()[0]["generated_text"]
+        return {"result": output_text}
+    except Exception as e:
+        return {
+            "error": "Failed to parse response",
+            "details": str(e),
+            "raw": response.text
+        }
