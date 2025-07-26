@@ -1,9 +1,18 @@
+# Updated requirements.txt - Lightweight version for Vercel deployment
+# Removes heavy ML dependencies (sentence-transformers, torch, faiss-cpu)
+# Maintains core functionality with HuggingFace API integration
+
 fastapi==0.95.2
 uvicorn==0.29.0
 pydantic==1.10.12
 pdfminer.six==20221105
 requests==2.32.3
-sentence-transformers==2.2.2
-faiss-cpu==1.7.4
-numpy==1.24.3
-torch==2.0.1
+
+# Note: Removed heavy dependencies:
+# - sentence-transformers==2.2.2 (saves ~500MB)
+# - faiss-cpu==1.7.4 (saves ~50MB) 
+# - numpy==1.24.3 (saves ~20MB)
+# - torch==2.0.1 (saves ~800MB+)
+#
+# Total size reduction: ~1.3GB+ -> ~15MB
+# This should easily fit within Vercel's 250MB limit
