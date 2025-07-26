@@ -8,13 +8,16 @@ import asyncio
 from typing import List, Dict, Any
 from pdfminer.high_level import extract_text
 import gc
+import requests
 
+# Import OpenAI v1.x style
+from openai import OpenAI
 import openai
 
-# Set OpenAI API key (must be set in your deployment/environment variables)
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# Initialize OpenAI client (v1.x style)
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-app = FastAPI(title="Insurance Claims Processing API - GPT-4")
+app = FastAPI(title="Insurance Claims Processing API - GPT-4 Fixed")
 
 class QueryRequest(BaseModel):
     query: str
@@ -34,7 +37,6 @@ class RateLimiter:
         if len(self.requests) >= self.max_requests:
             sleep_time = 60 - (now - self.requests[0]) + 1
             print(f"Rate limit reached. Sleeping for {sleep_time:.1f} seconds...")
-            await asyncio.sleep(sleep_time)
             self.requests = []
         self.requests.append(now)
 
@@ -43,7 +45,6 @@ rate_limiter = RateLimiter()
 async def extract_pdf_from_url_optimized(url: str) -> str:
     try:
         print("Downloading PDF...")
-        import requests
         response = requests.get(url, timeout=30, stream=True)
         response.raise_for_status()
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
@@ -106,42 +107,67 @@ def find_relevant_chunks_optimized(question: str, chunks: List[str], top_k: int 
     scored_chunks.sort(reverse=True, key=lambda x: x[0])
     return [chunk for _, chunk in scored_chunks[:top_k] if _ > 0.1]
 
-async def call_openai_api(messages: List[Dict], max_tokens: int = 1000, max_retries: int = 3) -> str:
-    if not openai.api_key:
+async def call_openai_api_v1(messages: List[Dict], max_tokens: int = 1000, max_retries: int = 3) -> str:
+    """OpenAI API call with v1.x SDK and proper error handling"""
+    
+    if not client.api_key:
         raise HTTPException(status_code=500, detail="OPENAI_API_KEY environment variable not set")
+    
     await rate_limiter.wait_if_needed()
+    
     for attempt in range(max_retries):
         try:
             print(f"OpenAI API call attempt {attempt + 1}/{max_retries}")
-            response = openai.ChatCompletion.create(
-                model="gpt-4",
+            
+            # Use the v1.x client syntax
+            response = client.chat.completions.create(
+                model="gpt-4",  # or "gpt-4-turbo" or "gpt-3.5-turbo"
                 messages=messages,
                 max_tokens=max_tokens,
                 temperature=0.1,
                 n=1,
-                stop=None
             )
+            
+            # Extract content using v1.x response format
             content = response.choices[0].message.content
             return content
-        except openai.error.RateLimitError:
+            
+        except openai.RateLimitError as e:  # v1.x error handling
             wait_time = 2 ** attempt * 10
             print(f"Rate limit hit. Waiting {wait_time}s before retry...")
             await asyncio.sleep(wait_time)
             continue
-        except openai.error.Timeout:
+            
+        except openai.APITimeoutError as e:  # v1.x timeout error
             if attempt < max_retries - 1:
                 wait_time = 2 ** attempt * 5
                 print(f"Timeout occurred. Retrying in {wait_time}s...")
                 await asyncio.sleep(wait_time)
                 continue
             raise HTTPException(status_code=504, detail="API timeout after retries")
-        except Exception as e:
+            
+        except openai.APIConnectionError as e:  # v1.x connection error
             if attempt < max_retries - 1:
                 wait_time = 2 ** attempt * 5
-                print(f"Request failed: {str(e)}. Retrying in {wait_time}s...")
+                print(f"Connection failed: {str(e)}. Retrying in {wait_time}s...")
                 await asyncio.sleep(wait_time)
                 continue
-            raise HTTPException(status_code=500, detail=f"API request failed: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"API connection failed: {str(e)}")
+            
+        except openai.AuthenticationError as e:  # v1.x auth error
+            raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
+            
+        except openai.BadRequestError as e:  # v1.x bad request error
+            raise HTTPException(status_code=400, detail=f"Bad request: {str(e)}")
+            
+        except Exception as e:  # Catch any other errors
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt * 5
+                print(f"Unexpected error: {str(e)}. Retrying in {wait_time}s...")
+                await asyncio.sleep(wait_time)
+                continue
+            raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+    
     raise HTTPException(status_code=500, detail="Max retries exceeded")
 
 async def process_questions_in_batches(questions: List[str], relevant_chunks_map: Dict[str, List[str]]) -> List[Dict]:
@@ -170,7 +196,7 @@ async def process_questions_in_batches(questions: List[str], relevant_chunks_map
             {"role": "user", "content": batch_prompt}
         ]
         try:
-            batch_response = await call_openai_api(messages, max_tokens=1500)
+            batch_response = await call_openai_api_v1(messages, max_tokens=1500)
             answers = parse_batch_response(batch_response, len(batch_questions))
             for j, question in enumerate(batch_questions):
                 answer = answers[j] if j < len(answers) else "Error processing this question"
@@ -234,7 +260,7 @@ async def query_llm_for_claim(user_text: str) -> Dict[str, Any]:
         {"role": "user", "content": prompt}
     ]
     try:
-        content = await call_openai_api(messages, max_tokens=800)
+        content = await call_openai_api_v1(messages, max_tokens=800)
         start = content.find("{")
         end = content.rfind("}") + 1
         if start != -1 and end > start:
@@ -256,7 +282,7 @@ async def health_check():
     return {
         "status": "healthy", 
         "model": "gpt-4",
-        "provider": "OpenAI",
+        "provider": "OpenAI v1.x",
         "optimizations": ["batch_processing", "rate_limiting", "memory_optimization"]
     }
 
