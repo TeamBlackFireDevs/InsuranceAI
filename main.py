@@ -1,35 +1,33 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from pydantic import BaseModel
 import requests
-import os
-import tempfile
-import json
 from pdfminer.high_level import extract_text
-from typing import List, Optional
+import tempfile
+import os
+import numpy as np
+from sentence_transformers import SentenceTransformer
+import faiss
+from typing import List, Dict, Any
+import json
 
 app = FastAPI()
 
-# Hugging Face API configuration
-HF_TOKEN = os.getenv("HF_TOKEN")
-API_URL = "https://router.huggingface.co/v1/chat/completions"
-
-headers = {
-    "Authorization": f"Bearer {HF_TOKEN}",
-    "Content-Type": "application/json"
-}
-
-class QueryRequest(BaseModel):
-    query: str
+# Initialize the sentence transformer model for embeddings
+model = SentenceTransformer('all-MiniLM-L6-v2')
 
 class QARequest(BaseModel):
     document_url: str
     questions: List[str]
 
-class DocumentQAResponse(BaseModel):
-    answers: List[dict]
+class DocumentChunk:
+    def __init__(self, text: str, chunk_id: int, page_num: int = None):
+        self.text = text
+        self.chunk_id = chunk_id
+        self.page_num = page_num
+        self.embedding = None
 
 def extract_pdf_from_url(url: str) -> str:
-    """Download PDF from URL and extract text content"""
+    """Extract text from PDF at given URL"""
     try:
         response = requests.get(url, timeout=30)
         response.raise_for_status()
@@ -43,180 +41,196 @@ def extract_pdf_from_url(url: str) -> str:
             return text
         finally:
             os.remove(tmp_path)
-            
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to extract PDF: {str(e)}")
+        return f"Error extracting PDF: {str(e)}"
 
-def chunk_text(text: str, max_length: int = 2000) -> List[str]:
-    """Split text into manageable chunks"""
-    paragraphs = text.split('\n\n')
+def chunk_text_intelligently(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[DocumentChunk]:
+    """
+    Intelligently chunk text preserving sentence boundaries
+    """
     chunks = []
+    sentences = text.split('. ')
+    
     current_chunk = ""
+    chunk_id = 0
     
-    for para in paragraphs:
-        if len(current_chunk + para) <= max_length:
-            current_chunk += para + "\n\n"
+    for sentence in sentences:
+        # Add sentence to current chunk
+        potential_chunk = current_chunk + sentence + ". "
+        
+        # If adding this sentence exceeds chunk size, save current chunk and start new
+        if len(potential_chunk) > chunk_size and current_chunk:
+            chunks.append(DocumentChunk(current_chunk.strip(), chunk_id))
+            
+            # Start new chunk with overlap from previous chunk
+            overlap_text = current_chunk[-overlap:] if len(current_chunk) > overlap else current_chunk
+            current_chunk = overlap_text + sentence + ". "
+            chunk_id += 1
         else:
-            if current_chunk:
-                chunks.append(current_chunk.strip())
-            current_chunk = para + "\n\n"
+            current_chunk = potential_chunk
     
-    if current_chunk:
-        chunks.append(current_chunk.strip())
+    # Add the last chunk
+    if current_chunk.strip():
+        chunks.append(DocumentChunk(current_chunk.strip(), chunk_id))
     
     return chunks
 
-def query_llm(prompt: str) -> str:
-    """Send query to Hugging Face LLM and get response"""
-    payload = {
-        "model": "Qwen/Qwen3-Coder-480B-A35B-Instruct:novita",
-        "messages": [
-            {"role": "system", "content": "You are a helpful insurance claim and document analysis assistant."},
-            {"role": "user", "content": prompt}
-        ],
-        "temperature": 0.3,
-        "max_tokens": 500
-    }
+def create_embeddings(chunks: List[DocumentChunk]) -> List[DocumentChunk]:
+    """Create embeddings for document chunks"""
+    texts = [chunk.text for chunk in chunks]
+    embeddings = model.encode(texts)
     
-    try:
-        response = requests.post(API_URL, headers=headers, json=payload, timeout=30)
-        response.raise_for_status()
-        
-        response_data = response.json()
-        return response_data["choices"][0]["message"]["content"]
+    for i, chunk in enumerate(chunks):
+        chunk.embedding = embeddings[i]
     
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"LLM query failed: {str(e)}")
+    return chunks
 
-def parse_llm_json_response(content: str) -> dict:
-    """Parse JSON from LLM response, handling markdown code blocks"""
+def build_faiss_index(chunks: List[DocumentChunk]) -> faiss.IndexFlatIP:
+    """Build FAISS index for semantic search"""
+    embeddings = np.array([chunk.embedding for chunk in chunks]).astype('float32')
+    
+    # Normalize embeddings for cosine similarity
+    faiss.normalize_L2(embeddings)
+    
+    # Create FAISS index
+    dimension = embeddings.shape[1]
+    index = faiss.IndexFlatIP(dimension)  # Inner product for cosine similarity
+    index.add(embeddings)
+    
+    return index
+
+def retrieve_relevant_chunks(query: str, chunks: List[DocumentChunk], index: faiss.IndexFlatIP, top_k: int = 3) -> List[DocumentChunk]:
+    """Retrieve most relevant chunks for a query"""
+    # Encode query
+    query_embedding = model.encode([query]).astype('float32')
+    faiss.normalize_L2(query_embedding)
+    
+    # Search in FAISS index
+    scores, indices = index.search(query_embedding, top_k)
+    
+    # Return relevant chunks
+    relevant_chunks = [chunks[idx] for idx in indices[0]]
+    return relevant_chunks
+
+def generate_answer_with_context(question: str, relevant_chunks: List[DocumentChunk]) -> Dict[str, Any]:
+    """Generate answer using Hugging Face API with retrieved context"""
+    
+    # Combine relevant chunks into context
+    context = "\n\n".join([f"Chunk {chunk.chunk_id}: {chunk.text}" for chunk in relevant_chunks])
+    
+    # Prepare the prompt
+    prompt = f"""Based on the following policy document sections, answer the question accurately and specifically. If the information is not found in the provided sections, state that clearly.
+
+Policy Document Sections:
+{context}
+
+Question: {question}
+
+Instructions:
+- Answer only based on the information provided in the document sections above
+- If the specific information is not found, state "Information not found in the provided document sections"
+- If found, quote the relevant part and provide the chunk reference
+- Be precise and factual
+
+Answer:"""
+
     try:
-        # Remove markdown code blocks if present
-        if "```json" in content:
-            start = content.find("```json") + 7
-            end = content.find("```", start)
-            json_str = content[start:end].strip()
-        elif "```" in content:
-            start = content.find("```") + 3
-            end = content.find("```", start)
-            json_str = content[start:end].strip()
+        # Call Hugging Face API (using your existing API setup)
+        url = "https://api.novita.ai/v3/openai/chat/completions"
+        
+        headers = {
+            "Authorization": f"Bearer {os.getenv('HF_TOKEN')}",
+            "Content-Type": "application/json"
+        }
+        
+        data = {
+            "model": "qwen/Qwen3-Coder-480B-A35B-Instruct:novita",
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+            "max_tokens": 500,
+            "temperature": 0.1,
+            "stream": False
+        }
+        
+        response = requests.post(url, headers=headers, json=data, timeout=60)
+        
+        if response.status_code == 200:
+            result = response.json()
+            answer = result['choices'][0]['message']['content']
+            
+            return {
+                "question": question,
+                "answer": answer,
+                "evidence_chunks": [
+                    {
+                        "chunk_id": chunk.chunk_id,
+                        "text": chunk.text[:200] + "..." if len(chunk.text) > 200 else chunk.text
+                    } for chunk in relevant_chunks
+                ],
+                "confidence": 0.85
+            }
         else:
-            # Try to find JSON object
-            start = content.find("{")
-            end = content.rfind("}") + 1
-            if start != -1 and end > start:
-                json_str = content[start:end]
-            else:
-                json_str = content
-        
-        return json.loads(json_str)
-    
+            return {
+                "question": question,
+                "answer": f"API Error: {response.status_code}",
+                "evidence_chunks": [],
+                "confidence": 0.0
+            }
+            
     except Exception as e:
-        return {"error": "Failed to parse JSON", "raw_content": content}
-
-@app.post("/api/v1/insurance-claim")
-async def process_claim(req: QueryRequest):
-    """Original insurance claim processing endpoint"""
-    prompt = (
-        "You are an insurance claim processing assistant. "
-        "Given the customer query, analyze and provide a decision. "
-        "Return your response as valid JSON with the following structure:\n\n"
-        "{\n"
-        '  "decision": "APPROVED/REJECTED/UNDETERMINED",\n'
-        '  "amount": "coverage amount or null",\n'
-        '  "justification": [\n'
-        '    {\n'
-        '      "criteria": "evaluation criteria",\n'
-        '      "status": "PASSED/FAILED",\n'
-        '      "explanation": "detailed explanation",\n'
-        '      "clause_reference": "policy section reference"\n'
-        '    }\n'
-        '  ]\n'
-        "}\n\n"
-        f"Customer Query: {req.query}\n\n"
-        "Provide a structured JSON response analyzing this claim."
-    )
-    
-    try:
-        llm_response = query_llm(prompt)
-        parsed_response = parse_llm_json_response(llm_response)
-        
-        if "error" in parsed_response:
-            return {"result": llm_response, "parsed": False}
-        
-        return parsed_response
-    
-    except Exception as e:
-        return {"error": str(e), "query": req.query}
+        return {
+            "question": question,
+            "answer": f"Processing error: {str(e)}",
+            "evidence_chunks": [],
+            "confidence": 0.0
+        }
 
 @app.post("/api/v1/document-qa")
 async def document_qa(req: QARequest):
-    """Enhanced document Q&A endpoint for processing policy documents"""
+    """Process document Q&A with RAG implementation"""
     try:
-        # Extract text from PDF
+        # Step 1: Extract PDF text
         pdf_text = extract_pdf_from_url(req.document_url)
         
-        if not pdf_text.strip():
-            raise HTTPException(status_code=400, detail="No text could be extracted from the document")
+        if pdf_text.startswith("Error"):
+            return {"error": pdf_text}
         
-        # Chunk the document for better processing
-        chunks = chunk_text(pdf_text, max_length=3000)
+        # Step 2: Chunk the document intelligently
+        chunks = chunk_text_intelligently(pdf_text, chunk_size=1200, overlap=200)
         
-        # Process each question
+        if not chunks:
+            return {"error": "No content could be extracted from the document"}
+        
+        # Step 3: Create embeddings
+        chunks_with_embeddings = create_embeddings(chunks)
+        
+        # Step 4: Build FAISS index for semantic search
+        index = build_faiss_index(chunks_with_embeddings)
+        
+        # Step 5: Process each question
         answers = []
-        
         for question in req.questions:
-            # For each question, use the most relevant chunk or full document
-            # In a production system, you'd use semantic search here
-            relevant_text = chunks[0] if chunks else pdf_text[:3000]  # Use first chunk as primary context
+            # Retrieve relevant chunks
+            relevant_chunks = retrieve_relevant_chunks(question, chunks_with_embeddings, index, top_k=3)
             
-            prompt = (
-                f"Document Content:\n{relevant_text}\n\n"
-                f"Question: {question}\n\n"
-                "Instructions:\n"
-                "- Answer the question based ONLY on the document content provided above\n"
-                "- Be specific and cite relevant sections when possible\n"
-                "- If the information is not in the document, state 'Information not found in document'\n"
-                "- Provide a clear, concise answer\n\n"
-                "Answer:"
-            )
-            
-            try:
-                answer = query_llm(prompt)
-                
-                answers.append({
-                    "question": question,
-                    "answer": answer.strip(),
-                    "evidence_excerpt": relevant_text[:200] + "..." if len(relevant_text) > 200 else relevant_text,
-                    "confidence": 0.85  # Static confidence for MVP
-                })
-                
-            except Exception as e:
-                answers.append({
-                    "question": question,
-                    "answer": f"Error processing question: {str(e)}",
-                    "evidence_excerpt": "",
-                    "confidence": 0.0
-                })
+            # Generate answer with context
+            answer_data = generate_answer_with_context(question, relevant_chunks)
+            answers.append(answer_data)
         
-        return {"answers": answers}
-    
+        return {
+            "answers": answers,
+            "document_stats": {
+                "total_chunks": len(chunks),
+                "total_characters": len(pdf_text),
+                "avg_chunk_size": sum(len(chunk.text) for chunk in chunks) // len(chunks)
+            }
+        }
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Document processing failed: {str(e)}")
+        return {"error": f"Processing failed: {str(e)}"}
 
-@app.get("/")
-async def root():
-    """Health check endpoint"""
-    return {
-        "message": "Insurance Claims Processing API",
-        "endpoints": [
-            "/api/v1/insurance-claim - Process insurance claims",
-            "/api/v1/document-qa - Document Q&A processing"
-        ],
-        "status": "active"
-    }
-
+# Health check endpoint
 @app.get("/health")
 async def health_check():
-    """Health check for monitoring"""
-    return {"status": "healthy", "api": "insurance-claims"}
+    return {"status": "healthy", "model_loaded": True}

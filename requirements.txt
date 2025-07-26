@@ -1,7 +1,9 @@
-fastapi==0.103.1
+fastapi==0.95.2
 uvicorn==0.29.0
-pydantic==2.3.0
-asgiref==3.7.2
-requests==2.31.0
+pydantic==1.10.12
 pdfminer.six==20221105
-typing-extensions==4.7.1
+requests==2.32.3
+sentence-transformers==2.2.2
+faiss-cpu==1.7.4
+numpy==1.24.3
+torch==2.0.1
