@@ -2,7 +2,7 @@ import requests
 import json
 
 # Replace with your deployed Vercel URL
-BASE_URL = "https://your-app-name.vercel.app"
+BASE_URL = "https://insurance-g9nonjepg-arjuniscools-projects.vercel.app/"
 
 def test_health_check():
     """Test if the API is running"""

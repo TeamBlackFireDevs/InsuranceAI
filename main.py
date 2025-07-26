@@ -11,7 +11,7 @@ from pdfminer.high_level import extract_text
 app = FastAPI(title="Insurance Claims Processing MVP")
 
 # Get API key
-LLM_API_KEY = os.getenv("LLM_Key")
+LLM_API_KEY = os.getenv("LLM_KEY")
 
 class ClaimRequest(BaseModel):
     query: str
@@ -23,7 +23,7 @@ class DocumentQARequest(BaseModel):
 def call_llm_api(messages: List[Dict], max_tokens: int = 800) -> str:
     """Call OpenRouter API"""
     if not LLM_API_KEY:
-        raise HTTPException(status_code=500, detail="LLM_Key environment variable not set")
+        raise HTTPException(status_code=500, detail="LLM_KEY environment variable not set")
     
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
