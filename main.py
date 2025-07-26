@@ -6,7 +6,7 @@ import os
 app = FastAPI()
 
 HF_TOKEN = os.getenv("HF_TOKEN")  # Set this in Vercel env vars
-MODEL_ID = "mistralai/Mistral-7B-Instruct-v0.1"
+MODEL_ID = "Qwen/Qwen3-Coder-480B-A35B-Instruct:novita"
 
 headers = {
     "Authorization": f"Bearer {HF_TOKEN}"
