@@ -1,17 +1,18 @@
-# Insurance Claims Processing API - Updated for Vercel Deployment
-# Removes heavy ML dependencies while maintaining HuggingFace Qwen model integration
-
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import requests
-import tempfile
 import os
+import tempfile
 import json
 import re
 from typing import List, Dict, Any
 from pdfminer.high_level import extract_text
 
+# Initialize FastAPI app
 app = FastAPI(title="Insurance Claims Processing API")
+
+# Get HuggingFace token (your original working setup)
+HF_TOKEN = os.getenv("HF_TOKEN")
 
 class QueryRequest(BaseModel):
     query: str
@@ -20,336 +21,242 @@ class QARequest(BaseModel):
     document_url: str
     questions: List[str]
 
-class DocumentChunk:
-    def __init__(self, text: str, chunk_id: int, page_num: int = None):
-        self.text = text
-        self.chunk_id = chunk_id
-        self.page_num = page_num
-
 def extract_pdf_from_url(url: str) -> str:
-    """Extract text from PDF at given URL"""
+    """Download PDF from URL and extract text content"""
     try:
         response = requests.get(url, timeout=30)
         response.raise_for_status()
         
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-            tmp.write(response.content)
-            tmp_path = tmp.name
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+            tmp_file.write(response.content)
+            tmp_path = tmp_file.name
         
         try:
             text = extract_text(tmp_path)
             return text
         finally:
-            os.remove(tmp_path)
+            os.unlink(tmp_path)
             
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error extracting PDF: {str(e)}")
 
-def chunk_text_intelligently(text: str, chunk_size: int = 1200, overlap: int = 200) -> List[DocumentChunk]:
-    """
-    Intelligently chunk text preserving sentence boundaries
-    Lightweight version without ML dependencies
-    """
+def chunk_text(text: str, chunk_size: int = 1500, overlap: int = 300) -> List[str]:
+    """Split text into overlapping chunks for better context preservation"""
+    if len(text) <= chunk_size:
+        return [text]
+    
     chunks = []
+    start = 0
     
-    # Split by paragraphs first, then by sentences if needed
-    paragraphs = text.split('\n\n')
-    current_chunk = ""
-    chunk_id = 0
-    
-    for paragraph in paragraphs:
-        # If paragraph is very long, split by sentences
-        if len(paragraph) > chunk_size:
-            sentences = re.split(r'(?<=[.!?])\s+', paragraph)
+    while start < len(text):
+        end = start + chunk_size
+        
+        # Try to end at a sentence boundary
+        if end < len(text):
+            # Look for sentence endings within the last 200 characters
+            last_period = text.rfind('.', start + chunk_size - 200, end)
+            last_newline = text.rfind('\n', start + chunk_size - 200, end)
             
-            for sentence in sentences:
-                potential_chunk = current_chunk + " " + sentence if current_chunk else sentence
-                
-                if len(potential_chunk) > chunk_size and current_chunk:
-                    # Save current chunk
-                    chunks.append(DocumentChunk(current_chunk.strip(), chunk_id))
-                    chunk_id += 1
-                    
-                    # Start new chunk with overlap
-                    overlap_text = current_chunk[-overlap:] if len(current_chunk) > overlap else ""
-                    current_chunk = overlap_text + " " + sentence
-                else:
-                    current_chunk = potential_chunk
-        else:
-            # Add whole paragraph
-            potential_chunk = current_chunk + "\n\n" + paragraph if current_chunk else paragraph
-            
-            if len(potential_chunk) > chunk_size and current_chunk:
-                # Save current chunk
-                chunks.append(DocumentChunk(current_chunk.strip(), chunk_id))
-                chunk_id += 1
-                
-                # Start new chunk with overlap
-                overlap_text = current_chunk[-overlap:] if len(current_chunk) > overlap else ""
-                current_chunk = overlap_text + "\n\n" + paragraph
-            else:
-                current_chunk = potential_chunk
-    
-    # Add the final chunk
-    if current_chunk.strip():
-        chunks.append(DocumentChunk(current_chunk.strip(), chunk_id))
+            boundary = max(last_period, last_newline)
+            if boundary > start:
+                end = boundary + 1
+        
+        chunk = text[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        
+        # Move start position with overlap
+        start = end - overlap if end < len(text) else len(text)
+        
+        if start >= len(text):
+            break
     
     return chunks
 
-def find_relevant_chunks_simple(query: str, chunks: List[DocumentChunk], top_k: int = 3) -> List[DocumentChunk]:
-    """
-    Find relevant chunks using simple keyword matching and scoring
-    Replaces semantic search to avoid heavy ML dependencies
-    """
+def find_relevant_chunks_keyword_based(question: str, chunks: List[str], top_k: int = 3) -> List[str]:
+    """Find most relevant chunks using keyword matching (lightweight alternative to semantic search)"""
     if not chunks:
         return []
     
-    # Convert query to lowercase and extract keywords
-    query_words = set(re.findall(r'\b\w+\b', query.lower()))
+    question_words = set(word.lower().strip('.,!?;:') for word in question.split() if len(word) > 2)
     
-    # Score each chunk based on keyword overlap
     scored_chunks = []
-    
     for chunk in chunks:
-        chunk_words = set(re.findall(r'\b\w+\b', chunk.text.lower()))
+        chunk_words = set(word.lower().strip('.,!?;:') for word in chunk.split() if len(word) > 2)
         
-        # Calculate overlap score
-        overlap = len(query_words.intersection(chunk_words))
+        # Calculate relevance score
+        common_words = question_words.intersection(chunk_words)
+        score = len(common_words)
         
-        # Bonus for exact phrase matches
-        phrase_bonus = 0
-        query_phrases = [query[i:i+20] for i in range(len(query)-19)]
-        for phrase in query_phrases:
-            if phrase.lower() in chunk.text.lower():
-                phrase_bonus += 2
+        # Boost score for exact phrase matches
+        question_lower = question.lower()
+        chunk_lower = chunk.lower()
+        for word in question_words:
+            if word in chunk_lower:
+                score += 0.5
         
-        # Total score
-        total_score = overlap + phrase_bonus
-        
-        if total_score > 0:  # Only include chunks with some relevance
-            scored_chunks.append((total_score, chunk))
+        scored_chunks.append((score, chunk))
     
     # Sort by score and return top chunks
-    scored_chunks.sort(key=lambda x: x[0], reverse=True)
-    return [chunk for _, chunk in scored_chunks[:top_k]]
+    scored_chunks.sort(reverse=True, key=lambda x: x[0])
+    return [chunk for _, chunk in scored_chunks[:top_k] if _ > 0]
 
-def call_huggingface_qwen_api(prompt: str, max_tokens: int = 800) -> str:
-    """
-    Call HuggingFace API with Qwen model - maintaining your existing integration
-    """
+def call_hf_api(messages: List[Dict], max_tokens: int = 800) -> str:
+    """Call HuggingFace API using your original working setup"""
+    
+    if not HF_TOKEN:
+        raise HTTPException(status_code=500, detail="HF_TOKEN environment variable not set")
+    
+    # Your original working API setup
+    url = "https://api.novita.ai/v3/openai/chat/completions"
+    
+    headers = {
+        "Authorization": f"Bearer {HF_TOKEN}",  # Your original working format
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "model": "Qwen/Qwen3-Coder-480B-A35B-Instruct:novita",  # Your original model
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": 0.3,
+        "stream": False
+    }
+    
     try:
-        url = "https://api.novita.ai/v3/openai/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {os.getenv('HF_TOKEN')}",
-            "Content-Type": "application/json"
-        }
+        response = requests.post(url, headers=headers, json=payload, timeout=60)
+        response.raise_for_status()
         
-        data = {
-            "model": "Qwen/Qwen3-Coder-480B-A35B-Instruct:novita",
-            "messages": [
-                {"role": "user", "content": prompt}
-            ],
-            "max_tokens": max_tokens,
-            "temperature": 0.1,
-            "stream": False
-        }
+        result = response.json()
         
-        response = requests.post(url, headers=headers, json=data, timeout=60)
-        
-        if response.status_code == 200:
-            result = response.json()
+        if 'choices' in result and len(result['choices']) > 0:
             return result['choices'][0]['message']['content']
         else:
-            return f"API Error: {response.status_code} - {response.text}"
+            raise HTTPException(status_code=500, detail="Unexpected API response format")
+            
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"API Error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+
+def query_llm_for_claim(user_text: str) -> Dict[str, Any]:
+    """Process insurance claim query using your original HF model"""
+    prompt = (
+        "You are an insurance claim processing assistant. "
+        "Given the following customer query, extract all relevant details (age, condition, policy duration, location, etc), "
+        "retrieve matching rules from typical Bajaj Allianz health insurance policy (waiting periods, exclusions, etc). "
+        "Then output a JSON with: decision (APPROVED/REJECTED/UNDETERMINED), amount (if applicable), and a justification "
+        "(mapping each decision to the clause/rule). Use this format:\n\n"
+        "{\n"
+        '  "decision": "APPROVED",\n'
+        '  "amount": "Up to Sum Insured as per Policy Schedule",\n'
+        '  "justification": [\n'
+        '    {\n'
+        '      "criteria": "—",\n'
+        '      "status": "PASSED/FAILED",\n'
+        '      "explanation": "—",\n'
+        '      "clause_reference": "—"\n'
+        '    }\n'
+        "  ]\n"
+        "}\n\n"
+        "Customer Query:\n"
+        f"{user_text}\n"
+        "Be concise and specific. If information is missing, set 'decision' to 'UNDETERMINED' and explain what is needed."
+    )
+
+    messages = [
+        {"role": "system", "content": "You are a helpful insurance claim processor."},
+        {"role": "user", "content": prompt}
+    ]
+    
+    try:
+        content = call_hf_api(messages, max_tokens=800)
+        
+        # Extract JSON from response
+        start = content.find("{")
+        end = content.rfind("}") + 1
+        if start != -1 and end > start:
+            result_json = json.loads(content[start:end])
+            return result_json
+        else:
+            return {
+                "decision": "UNDETERMINED",
+                "justification": "Unable to parse LLM response format"
+            }
             
     except Exception as e:
-        return f"Error calling HuggingFace API: {str(e)}"
+        return {
+            "decision": "UNDETERMINED", 
+            "justification": f"Error processing query: {str(e)}"
+        }
 
-def generate_answer_with_context(question: str, relevant_chunks: List[DocumentChunk]) -> Dict[str, Any]:
-    """Generate answer using HuggingFace Qwen API with retrieved context"""
+def answer_question_with_context(question: str, context_chunks: List[str]) -> str:
+    """Answer question using provided context chunks"""
+    context = "\n\n".join(context_chunks)
     
-    # Combine relevant chunks into context
-    context = "\n\n".join([f"Document Section {chunk.chunk_id}: {chunk.text}" for chunk in relevant_chunks])
-    
-    # Prepare the prompt for Qwen model
-    prompt = f"""Based on the following insurance policy document sections, answer the question accurately and specifically. If the information is not found in the provided sections, state that clearly.
+    prompt = f"""Based on the following insurance policy document sections, answer the question as specifically and accurately as possible.
 
-Insurance Policy Document Sections:
+Policy Document Sections:
 {context}
 
 Question: {question}
 
 Instructions:
-- Answer only based on the information provided in the document sections above
-- If the specific information is not found, state "Information not found in the provided document sections"  
-- If found, quote the relevant part and provide clear details
-- Be precise, factual, and cite the document section when possible
-- Format your response clearly and professionally
+- Answer based ONLY on the information provided in the document sections above
+- If the information is not found in the provided sections, state "Information not found in provided document sections"
+- Be specific and cite relevant policy sections when possible
+- Keep your answer concise but comprehensive"""
 
-Answer:"""
-
-    # Call HuggingFace Qwen API
-    answer = call_huggingface_qwen_api(prompt, max_tokens=500)
+    messages = [
+        {"role": "system", "content": "You are a helpful insurance policy analyst."},
+        {"role": "user", "content": prompt}
+    ]
     
-    return {
-        "question": question,
-        "answer": answer,
-        "evidence_chunks": [
-            {
-                "chunk_id": chunk.chunk_id,
-                "text": chunk.text[:300] + "..." if len(chunk.text) > 300 else chunk.text
-            } for chunk in relevant_chunks
-        ],
-        "confidence": 0.85
-    }
-
-def process_insurance_claim(query: str) -> Dict[str, Any]:
-    """Process insurance claim using HuggingFace Qwen model - your original functionality"""
-    
-    prompt = f"""You are an expert insurance claim processing assistant. Analyze the following insurance claim query and provide a structured decision.
-
-Based on typical insurance policy rules (waiting periods, age limits, pre-existing conditions, coverage terms), evaluate this claim:
-
-Claim Query: {query}
-
-Provide your response in this exact JSON format:
-{{
-  "decision": "APPROVED" or "REJECTED" or "UNDETERMINED",
-  "amount": "coverage amount if applicable or null",
-  "justification": [
-    {{
-      "criteria": "evaluation criteria name",
-      "status": "PASSED" or "FAILED" or "UNDETERMINED", 
-      "explanation": "detailed explanation of this criteria evaluation",
-      "clause_reference": "relevant policy section or clause"
-    }}
-  ]
-}}
-
-Instructions:
-- Use APPROVED only if all criteria clearly pass
-- Use REJECTED if any critical criteria fail  
-- Use UNDETERMINED if insufficient information is provided
-- Provide detailed explanations for each criteria
-- Reference typical insurance policy clauses
-- Be thorough and professional
-
-Response:"""
-
-    # Call HuggingFace Qwen API
-    response_text = call_huggingface_qwen_api(prompt, max_tokens=800)
-    
-    # Try to extract JSON from response
     try:
-        # Find JSON in the response
-        json_start = response_text.find('{')
-        json_end = response_text.rfind('}') + 1
-        
-        if json_start != -1 and json_end > json_start:
-            json_str = response_text[json_start:json_end]
-            result = json.loads(json_str)
-            return result
-        else:
-            # Fallback if JSON parsing fails
-            return {
-                "decision": "UNDETERMINED",
-                "amount": None,
-                "justification": [
-                    {
-                        "criteria": "Response Processing",
-                        "status": "FAILED",
-                        "explanation": f"Could not parse structured response. Raw response: {response_text[:200]}...",
-                        "clause_reference": "System Processing Error"
-                    }
-                ]
-            }
-    except json.JSONDecodeError:
-        return {
-            "decision": "UNDETERMINED", 
-            "amount": None,
-            "justification": [
-                {
-                    "criteria": "JSON Parsing",
-                    "status": "FAILED",
-                    "explanation": f"Invalid JSON in response: {response_text[:200]}...",
-                    "clause_reference": "System Processing Error"
-                }
-            ]
-        }
-
-# API Endpoints
-@app.post("/api/v1/insurance-claim")
-async def insurance_claim(req: QueryRequest):
-    """Process insurance claim query - your original endpoint"""
-    try:
-        result = process_insurance_claim(req.query)
-        return result
+        return call_hf_api(messages, max_tokens=500)
     except Exception as e:
-        return {
-            "decision": "UNDETERMINED",
-            "amount": None, 
-            "justification": [
-                {
-                    "criteria": "System Error",
-                    "status": "FAILED",
-                    "explanation": f"Processing error: {str(e)}",
-                    "clause_reference": "System Error"
-                }
-            ]
-        }
-
-@app.post("/api/v1/document-qa")
-async def document_qa(req: QARequest):
-    """Process document Q&A with lightweight RAG implementation"""
-    try:
-        # Step 1: Extract PDF text
-        pdf_text = extract_pdf_from_url(req.document_url)
-        
-        # Step 2: Chunk the document intelligently  
-        chunks = chunk_text_intelligently(pdf_text, chunk_size=1200, overlap=200)
-        
-        if not chunks:
-            return {"error": "No content could be extracted from the document"}
-        
-        # Step 3: Process each question
-        answers = []
-        for question in req.questions:
-            # Find relevant chunks using simple matching
-            relevant_chunks = find_relevant_chunks_simple(question, chunks, top_k=3)
-            
-            # Generate answer with context using HuggingFace Qwen
-            answer_data = generate_answer_with_context(question, relevant_chunks)
-            answers.append(answer_data)
-        
-        return {
-            "answers": answers,
-            "document_stats": {
-                "total_chunks": len(chunks),
-                "total_characters": len(pdf_text),
-                "avg_chunk_size": sum(len(chunk.text) for chunk in chunks) // len(chunks) if chunks else 0
-            }
-        }
-        
-    except Exception as e:
-        return {"error": f"Processing failed: {str(e)}"}
+        return f"Error processing question: {str(e)}"
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
-    return {
-        "status": "healthy", 
-        "model": "HuggingFace Qwen3-Coder-480B-A35B-Instruct",
-        "dependencies": "lightweight"
-    }
+    return {"status": "healthy", "model": "qwen/Qwen3-Coder-480B-A35B-Instruct:novita"}
 
-@app.get("/")
-async def root():
-    """Root endpoint"""
-    return {
-        "message": "Insurance Claims Processing API", 
-        "endpoints": {
-            "claims": "/api/v1/insurance-claim",
-            "document_qa": "/api/v1/document-qa",
-            "health": "/health"
-        }
-    }
+@app.post("/api/v1/insurance-claim")
+async def process_claim(req: QueryRequest):
+    """Process insurance claim with your original working model"""
+    result = query_llm_for_claim(req.query)
+    return result
+
+@app.post("/api/v1/document-qa")
+async def document_qa(req: QARequest):
+    """Process document Q&A using lightweight approach"""
+    try:
+        # Extract PDF text
+        pdf_text = extract_pdf_from_url(req.document_url)
+        
+        # Chunk the document
+        chunks = chunk_text(pdf_text, chunk_size=1500, overlap=300)
+        
+        responses = []
+        for question in req.questions:
+            # Find relevant chunks using keyword matching
+            relevant_chunks = find_relevant_chunks_keyword_based(question, chunks, top_k=3)
+            
+            if relevant_chunks:
+                answer = answer_question_with_context(question, relevant_chunks)
+                evidence_excerpt = relevant_chunks[0][:300] + "..." if relevant_chunks[0] else ""
+            else:
+                answer = "Information not found in document."
+                evidence_excerpt = ""
+            
+            responses.append({
+                "question": question,
+                "answer": answer,
+                "evidence_excerpt": evidence_excerpt,
+                "confidence": 0.85
+            })
+        
+        return {"answers": responses}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing document: {str(e)}")
