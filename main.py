@@ -145,7 +145,7 @@ def call_huggingface_qwen_api(prompt: str, max_tokens: int = 800) -> str:
         }
         
         data = {
-            "model": "qwen/Qwen3-Coder-480B-A35B-Instruct:novita",
+            "model": "Qwen/Qwen3-Coder-480B-A35B-Instruct:novita",
             "messages": [
                 {"role": "user", "content": prompt}
             ],
