@@ -415,59 +415,6 @@ def parse_batch_response(response: str, expected_count: int) -> List[str]:
     return final_answers
 
 
-async def query_llm_for_claim(user_text: str) -> Dict[str, Any]:
-    """Process insurance claim query using OpenRouter Qwen model"""
-    print(f"🔍 Processing insurance claim: {user_text[:100]}...")
-    
-    prompt = (
-        "You are an insurance claim processing assistant. "
-        "Analyze the following claim and provide a structured decision.\n\n"
-        "Return your response as JSON with this exact format:\n"
-        "{\n"
-        '  "decision": "APPROVED/REJECTED/UNDETERMINED",\n'
-        '  "amount": "coverage details",\n'
-        '  "justification": [\n'
-        '    {\n'
-        '      "criteria": "evaluation criteria",\n'
-        '      "status": "PASSED/FAILED",\n'
-        '      "explanation": "detailed reasoning",\n'
-        '      "clause_reference": "policy section"\n'
-        '    }\n'
-        "  ]\n"
-        "}\n\n"
-        f"Claim Query: {user_text}\n"
-        "Provide detailed analysis based on typical health insurance policy terms."
-    )
-    
-    messages = [
-        {"role": "system", "content": "You are a helpful insurance claim processor."},
-        {"role": "user", "content": prompt}
-    ]
-    
-    try:
-        content = await call_openrouter_with_retry(messages, max_tokens=800)
-        
-        # Extract JSON from response
-        start = content.find("{")
-        end = content.rfind("}") + 1
-        if start != -1 and end > start:
-            result_json = json.loads(content[start:end])
-            print("✅ Successfully parsed insurance claim response")
-            return result_json
-        else:
-            print("❌ Could not find JSON in response")
-            return {
-                "decision": "UNDETERMINED",
-                "justification": "Unable to parse response format"
-            }
-    except Exception as e:
-        print(f"❌ Error processing insurance claim: {str(e)}")
-        return {
-            "decision": "UNDETERMINED", 
-            "justification": f"Error processing query: {str(e)}"
-        }
-
-
 # API Routes
 @app.get("/")
 async def root():
@@ -477,38 +424,15 @@ async def root():
         "model": "qwen/qwen3-235b-a22b-2507:free",
         "provider": "OpenRouter",
         "endpoints": {
-            "health": "/health",
-            "insurance_claim": "/api/v1/insurance-claim",
-            "document_qa": "/api/v1/document-qa"
+            "document_qa": "/api/v1/hackrx/run"
         },
-        "status": "running"
-    }
-
-
-@app.get("/health")
-async def health_check():
-    return {
-        "status": "healthy", 
-        "model": "qwen/qwen3-235b-a22b-2507:free",
-        "provider": "OpenRouter",
+        "status": "running",
         "server": "localhost:8000",
-        "llm_key_configured": bool(LLM_KEY),
-        "optimizations": ["batch_processing", "rate_limiting", "memory_optimization"]
+        "llm_key_configured": bool(LLM_KEY)
     }
 
 
-@app.post("/api/v1/insurance-claim")
-async def process_claim(
-    req: QueryRequest, 
-    token: str = Depends(verify_bearer_token)
-):
-    """Process single insurance claim with bearer token authentication"""
-    print(f"🔐 Processing claim with token: {token[:10]}...")
-    result = await query_llm_for_claim(req.query)
-    return result
-
-
-@app.post("/api/v1/document-qa")
+@app.post("/api/v1/hackrx/run")
 async def document_qa_optimized(
     req: QARequest, 
     token: str = Depends(verify_bearer_token)
