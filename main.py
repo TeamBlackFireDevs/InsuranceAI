@@ -89,7 +89,7 @@ def verify_bearer_token(credentials: HTTPAuthorizationCredentials = Depends(secu
     )
 
 
-async def extract_pdf_from_url_optimized(url: str) -> str:
+async def extract_pdf_from_url(url: str) -> str:
     try:
         print(f"📄 Downloading PDF from: {url[:50]}...")
         response = requests.get(url, timeout=30, stream=True)
@@ -143,7 +143,7 @@ def chunk_text_memory_efficient(text: str, chunk_size: int = 1200, overlap: int 
     return chunks
 
 
-def find_relevant_chunks_optimized(question: str, chunks: List[str], top_k: int = 2) -> List[str]:
+def find_relevant_chunks(question: str, chunks: List[str], top_k: int = 2) -> List[str]:
     if not chunks:
         return []
     
@@ -433,11 +433,11 @@ async def root():
 
 
 @app.post("/api/v1/hackrx/run")
-async def document_qa_optimized(
+async def document_qa(
     req: QARequest, 
     token: str = Depends(verify_bearer_token)
 ):
-    """Optimized document Q&A with batch processing and bearer token authentication"""
+    """Document Q&A with batch processing and bearer token authentication"""
     try:
         print(f"🔐 Processing {len(req.questions)} questions with token: {token[:10]}...")
         
@@ -446,7 +446,7 @@ async def document_qa_optimized(
         # Extract PDF text
         for doc in req.documents:
 
-            pdf_text = await extract_pdf_from_url_optimized(doc)
+            pdf_text = await extract_pdf_from_url(doc)
             chunks.extend(chunk_text_memory_efficient(pdf_text, chunk_size=1200, overlap=200))
 
 
@@ -461,7 +461,7 @@ async def document_qa_optimized(
         relevant_chunks_map = {}
         for i, question in enumerate(req.questions):
             print(f"🔍 Processing question {i+1}: {question[:50]}...")
-            relevant_chunks_map[question] = find_relevant_chunks_optimized(question, chunks, top_k=2)
+            relevant_chunks_map[question] = find_relevant_chunks(question, chunks, top_k=2)
             print(f"📋 Found {len(relevant_chunks_map[question])} relevant chunks")
         
         # Process questions in batches
@@ -472,7 +472,7 @@ async def document_qa_optimized(
         return {"answers": responses}
         
     except Exception as e:
-        print(f"❌ CRITICAL ERROR in document_qa_optimized: {str(e)}")
+        print(f"❌ CRITICAL ERROR in document_qa: {str(e)}")
         print(f"❌ Error type: {type(e).__name__}")
         print("❌ Full traceback:")
         traceback.print_exc()
