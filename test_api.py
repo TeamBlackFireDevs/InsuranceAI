@@ -45,7 +45,7 @@ def test_insurance_claim():
 def test_document_qa():
     """Test document Q&A processing"""
     payload = {
-        "document_url": "https://hackrx.in/policies/BAJHLIP23020V012223.pdf",
+        "documents": "https://hackrx.in/policies/BAJHLIP23020V012223.pdf",
         "questions": [
             "What is the waiting period for pre-existing diseases?",
             "Does the policy cover day-care procedures?"
