@@ -1,55 +1,44 @@
 """
-InsuranceAI - Fast, accurate policy QA
---------------------------------------
+InsuranceAI - Fast, accurate policy QA (Vercel-optimized)
+--------------------------------------------------------
 
-Key improvements:
-1. 100 % async I/O – httpx for both PDF download and HF LLM calls.
-2. PyMuPDF text extraction (≈10-15× faster than pdfminer).
-3. Token-bucket rate limiter (30 req / min).
-4. ONE deterministic LLM request per run (all questions batched).
-5. Smaller but strong model: mistralai/Mistral-7B-Instruct (≈5-6 s latency).
-6. Guard-railed prompt + regex validation to stop hallucinations.
-7. Memory-efficient chunking & cosine-similarity ranking (MiniLM).
+Lightweight version without sentence-transformers:
+1. 100% async I/O with httpx
+2. PyMuPDF text extraction (10x faster)
+3. Simple keyword-based chunk ranking
+4. Single batched LLM call
+5. Token bucket rate limiting
+6. Memory-efficient for Vercel free tier
 """
-
-from __future__ import annotations
 
 import os
 import re
-import gc
 import time
-import json
-import math
 import asyncio
-import tempfile
 from typing import List, Dict, Union
 
 import fitz  # PyMuPDF
 import httpx
 import uvicorn
-import numpy as np
-
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, validator
 from dotenv import load_dotenv
-from sentence_transformers import SentenceTransformer, util as st_util
 
 # --------------------------------------------------------------------------- #
 #                              FastAPI scaffolding                            #
 # --------------------------------------------------------------------------- #
 
 load_dotenv()
-HF_TOKEN = os.getenv("HF_TOKEN") or ""  # Hugging Face access token
+HF_TOKEN = os.getenv("HF_TOKEN") or ""
 
 app = FastAPI(
-    title="InsuranceAI – lightning QA",
-    description="Fast & deterministic insurance-policy Q&A",
+    title="InsuranceAI – Lightning QA",
+    description="Fast insurance policy Q&A for Vercel",
     version="2.0.0",
 )
 
 security = HTTPBearer()
-
 
 class QARequest(BaseModel):
     documents: Union[str, List[str]]
@@ -59,9 +48,8 @@ class QARequest(BaseModel):
     def _ensure_list(cls, v):
         return [v] if isinstance(v, str) else v
 
-
 # --------------------------------------------------------------------------- #
-#                           Utility: token bucket rate-limiter                #
+#                           Simple rate limiter                               #
 # --------------------------------------------------------------------------- #
 
 class AsyncTokenBucket:
@@ -85,82 +73,82 @@ class AsyncTokenBucket:
             else:
                 self.tokens -= 1
 
-
 bucket = AsyncTokenBucket(rate=30, per_seconds=60)
 
 # --------------------------------------------------------------------------- #
 #                       PDF downloading & text extraction                     #
 # --------------------------------------------------------------------------- #
 
-async def _download_bytes(url: str) -> bytes:
-    """Download file bytes asynchronously."""
-    async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.get(url, follow_redirects=True)
-        r.raise_for_status()
-        return r.content
-
-
 async def extract_pdf_text(url: str) -> str:
-    """
-    Download PDF and extract text with PyMuPDF.
-
-    Returns:
-        The concatenated text with page-form-feed separators.
-    """
+    """Download PDF and extract text with PyMuPDF."""
     try:
-        raw = await _download_bytes(url)
-        with fitz.open(stream=raw, filetype="pdf") as doc:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.get(url, follow_redirects=True)
+            r.raise_for_status()
+        
+        with fitz.open(stream=r.content, filetype="pdf") as doc:
             pages = [page.get_text() for page in doc]
-        text = "\f".join(pages)
-        return text
+        return "\f".join(pages)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"PDF extraction failed: {e}") from e
-
+        raise HTTPException(status_code=400, detail=f"PDF extraction failed: {e}")
 
 # --------------------------------------------------------------------------- #
-#                       Text chunking & semantic ranking                      #
+#                    Lightweight keyword-based chunking                       #
 # --------------------------------------------------------------------------- #
 
-EMBED_MODEL = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
-
-
-def chunk_text(text: str, size: int = 1500, overlap: int = 250) -> List[str]:
+def chunk_text(text: str, size: int = 1200, overlap: int = 200) -> List[str]:
+    """Split text into overlapping chunks."""
     if len(text) <= size:
         return [text]
-
+    
     chunks, start = [], 0
     while start < len(text):
         end = min(len(text), start + size)
-        # smart break on sentence / newline
+        # Try to break at sentence or paragraph
         slice_ = text[start:end]
-        for delim in (".", "\n"):
+        for delim in (".\n", ". ", "\n\n", "\n"):
             idx = slice_.rfind(delim)
-            if idx != -1 and idx > size * 0.5:
-                end = start + idx + 1
+            if idx > size * 0.6:  # Don't break too early
+                end = start + idx + len(delim)
                 break
-        chunks.append(text[start:end].strip())
+        
+        chunk = text[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
         start = max(end - overlap, end)
     return chunks
 
+def score_chunk_relevance(question: str, chunk: str) -> float:
+    """Simple keyword-based relevance scoring."""
+    q_words = set(re.findall(r'\b\w+\b', question.lower()))
+    c_words = set(re.findall(r'\b\w+\b', chunk.lower()))
+    
+    if not q_words:
+        return 0.0
+    
+    # Exact matches get high score
+    exact_matches = len(q_words & c_words)
+    
+    # Partial matches (stemming-like)
+    partial_matches = 0
+    for qw in q_words:
+        if len(qw) > 4:  # Only for longer words
+            for cw in c_words:
+                if qw.startswith(cw[:4]) or cw.startswith(qw[:4]):
+                    partial_matches += 0.5
+                    break
+    
+    return (exact_matches + partial_matches) / len(q_words)
 
-def top_k_chunks(question: str, chunks: List[str], k: int = 4) -> List[str]:
+def top_k_chunks(question: str, chunks: List[str], k: int = 5) -> List[str]:
+    """Get top-k most relevant chunks using keyword scoring."""
     if not chunks:
         return []
-
-    q_emb = EMBED_MODEL.encode(question, convert_to_numpy=True, normalize_embeddings=True)
-    idxs = list(range(len(chunks)))
-    # embed in smaller batches to save RAM
-    scores = []
-    batch = 64
-    for i in range(0, len(chunks), batch):
-        embs = EMBED_MODEL.encode(
-            chunks[i : i + batch], convert_to_numpy=True, normalize_embeddings=True
-        )
-        sims = np.dot(embs, q_emb)
-        scores.extend(sims.tolist())
-    best = sorted(idxs, key=lambda i: scores[i], reverse=True)[:k]
-    return [chunks[i] for i in best]
-
+    
+    scored = [(score_chunk_relevance(question, chunk), chunk) for chunk in chunks]
+    scored.sort(key=lambda x: x[0], reverse=True)
+    
+    return [chunk for _, chunk in scored[:k]]
 
 # --------------------------------------------------------------------------- #
 #                         Hugging Face chat completion                        #
@@ -169,12 +157,13 @@ def top_k_chunks(question: str, chunks: List[str], k: int = 4) -> List[str]:
 HF_CHAT_URL = "https://api.endpoints.huggingface.cloud/v1/chat/completions"
 MODEL_NAME = "mistralai/Mistral-7B-Instruct-v0.2"
 
-
-async def call_hf_chat(messages: List[Dict], max_tokens: int = 900) -> str:
+async def call_hf_chat(messages: List[Dict], max_tokens: int = 800) -> str:
+    """Call HF chat completion API with rate limiting."""
     if not HF_TOKEN:
         raise HTTPException(status_code=500, detail="HF_TOKEN env var missing")
 
     await bucket.acquire()
+    
     payload = {
         "model": MODEL_NAME,
         "messages": messages,
@@ -190,60 +179,60 @@ async def call_hf_chat(messages: List[Dict], max_tokens: int = 900) -> str:
 
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.post(HF_CHAT_URL, headers=headers, json=payload)
+    
     if r.status_code != 200:
-        raise HTTPException(status_code=r.status_code, detail=f"HF API: {r.text}")
+        raise HTTPException(status_code=r.status_code, detail=f"HF API error: {r.text}")
+    
     data = r.json()
     return data["choices"][0]["message"]["content"]
 
-
 # --------------------------------------------------------------------------- #
-#                               Prompt helpers                                #
+#                               Prompt building                               #
 # --------------------------------------------------------------------------- #
 
 def build_batch_prompt(questions: List[str], context_map: Dict[str, List[str]]) -> List[Dict]:
-    """
-    Build ONE prompt containing all questions with their top-K contexts.
-    The model must answer in numbered list form (A1, A2, …).
-    """
+    """Build single prompt with all questions and their contexts."""
     segments = []
-    for idx, q in enumerate(questions, 1):
-        ctx = "\n".join(context_map[q])
-        segments.append(f"Q{idx}: {q}\nContext:\n{ctx}\n")
+    for idx, question in enumerate(questions, 1):
+        context = "\n".join(context_map[question][:3])  # Use top 3 chunks
+        segments.append(f"Q{idx}: {question}\nContext:\n{context}\n")
+    
     user_prompt = (
-        "You are a professional insurance policy analyst. "
-        "Answer every question **strictly** from its context. "
-        "If the context lacks the answer respond exactly: "
-        "\"The provided context does not contain this information\".\n\n"
-        "Return answers as:\nA1: <answer>\nA2: <answer>\n... etc.\n\n"
-        + "\n---\n".join(segments)
+        "You are a professional insurance policy analyst. Answer each question "
+        "using ONLY the information provided in its context. If the context "
+        "doesn't contain the answer, respond exactly: "
+        "\"The provided context does not contain this information.\"\n\n"
+        "Format your response as:\nA1: [answer to Q1]\nA2: [answer to Q2]\n"
+        "and so on for all questions.\n\n" +
+        "\n---\n".join(segments)
     )
+    
     return [
-        {"role": "system", "content": "You are an expert insurance analyst."},
-        {"role": "user", "content": user_prompt},
+        {"role": "system", "content": "You are an expert insurance policy analyst."},
+        {"role": "user", "content": user_prompt}
     ]
 
-
-def split_answers(raw: str, expected: int) -> List[str]:
-    pattern = r"A(\d+)[:\-]\s*(.+?)(?=\nA\d+[:\-]|\Z)"
-    matches = re.findall(pattern, raw, flags=re.S | re.I)
-    if len(matches) < expected:
-        # fallback naive split
-        parts = [p.strip() for p in raw.split("\n") if p.strip()]
-        return (parts + ["Answer not found"] * expected)[:expected]
-    # order by idx
-    answers = [""] * expected
-    for idx_str, ans in matches:
-        i = int(idx_str) - 1
-        if 0 <= i < expected:
-            answers[i] = ans.strip()
-    for i, a in enumerate(answers):
-        if not a:
-            answers[i] = "Answer not found"
+def parse_numbered_answers(response: str, expected_count: int) -> List[str]:
+    """Extract numbered answers from LLM response."""
+    pattern = r"A(\d+)[:\-\.]?\s*(.+?)(?=\nA\d+[:\-\.]|\Z)"
+    matches = re.findall(pattern, response, flags=re.DOTALL | re.IGNORECASE)
+    
+    # Initialize answers array
+    answers = ["The provided context does not contain this information."] * expected_count
+    
+    # Fill in found answers
+    for num_str, answer in matches:
+        try:
+            idx = int(num_str) - 1
+            if 0 <= idx < expected_count:
+                answers[idx] = answer.strip()
+        except ValueError:
+            continue
+    
     return answers
 
-
 # --------------------------------------------------------------------------- #
-#                              Security helper                                #
+#                                 Security                                    #
 # --------------------------------------------------------------------------- #
 
 def auth(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
@@ -252,48 +241,54 @@ def auth(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
         raise HTTPException(status_code=401, detail="Invalid bearer token")
     return token
 
-
 # --------------------------------------------------------------------------- #
 #                                    Routes                                   #
 # --------------------------------------------------------------------------- #
 
 @app.post("/api/v1/hackrx/run")
 async def document_qa(req: QARequest, _: str = Depends(auth)):
+    """Main endpoint for document Q&A."""
     start_time = time.perf_counter()
-
-    # 1) Fetch & extract PDFs concurrently
-    texts = await asyncio.gather(*[extract_pdf_text(u) for u in req.documents])
-    chunks = []
-    for txt in texts:
-        chunks.extend(chunk_text(txt))
-
-    # 2) Rank & map contexts
-    context_map: Dict[str, List[str]] = {
-        q: top_k_chunks(q, chunks, k=4) for q in req.questions
-    }
-
-    # 3) Build & send single chat request
-    prompt = build_batch_prompt(req.questions, context_map)
-    raw_answer = await call_hf_chat(prompt)
-
-    # 4) Parse numbered answers
-    answers = split_answers(raw_answer, len(req.questions))
-
-    elapsed = time.perf_counter() - start_time
-    print(f"Finished in {elapsed:0.2f}s")
-    return {"answers": answers}
-
+    
+    try:
+        # 1. Extract text from all PDFs concurrently
+        texts = await asyncio.gather(*[extract_pdf_text(url) for url in req.documents])
+        
+        # 2. Chunk all text
+        all_chunks = []
+        for text in texts:
+            all_chunks.extend(chunk_text(text))
+        
+        # 3. Find relevant chunks for each question
+        context_map = {}
+        for question in req.questions:
+            context_map[question] = top_k_chunks(question, all_chunks, k=4)
+        
+        # 4. Build single prompt and get response
+        messages = build_batch_prompt(req.questions, context_map)
+        raw_response = await call_hf_chat(messages)
+        
+        # 5. Parse answers
+        answers = parse_numbered_answers(raw_response, len(req.questions))
+        
+        elapsed = time.perf_counter() - start_time
+        print(f"✅ Completed in {elapsed:.2f}s")
+        
+        return {"answers": answers}
+        
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/")
 async def root():
     return {
         "service": "InsuranceAI",
         "version": "2.0.0",
+        "status": "optimized for Vercel free tier",
         "model": MODEL_NAME,
-        "docs": "/docs",
-        "hf_token_configured": bool(HF_TOKEN),
+        "hf_token_configured": bool(HF_TOKEN)
     }
-
 
 # --------------------------------------------------------------------------- #
 #                                 Dev server                                  #
@@ -301,5 +296,5 @@ async def root():
 
 if __name__ == "__main__":
     if not HF_TOKEN:
-        print("⚠️  HF_TOKEN env var is missing; set it first.")
-    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")), log_level="info")
+        print("⚠️  Set HF_TOKEN environment variable")
+    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
