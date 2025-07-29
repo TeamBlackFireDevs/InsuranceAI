@@ -172,11 +172,11 @@ def find_relevant_chunks(question: str, chunks: List[str], top_k: int = 3) -> Li
 
 async def call_huggingface_with_retry(messages: List[Dict], max_tokens: int = 1000, max_retries: int = 3) -> str:
     """Hugging Face Inference API call with retry logic"""
-    if not HF_TOKEN:
-        print("❌ ERROR: HF_TOKEN environment variable not set")
-        raise HTTPException(status_code=500, detail="HF_TOKEN environment variable not set")
+    if not LLM_KEY:
+        print("❌ ERROR: LLM_KEY environment variable not set")
+        raise HTTPException(status_code=500, detail="LLM_KEY environment variable not set")
     
-    print(f"🔑 Using HF_TOKEN: {HF_TOKEN[:10]}...")
+    print(f"🔑 Using LLM_KEY: {LLM_KEY[:10]}...")
     
     # Apply rate limiting
     await rate_limiter.wait_if_needed()
@@ -186,7 +186,7 @@ async def call_huggingface_with_retry(messages: List[Dict], max_tokens: int = 10
     url = f"https://api-inference.huggingface.co/models/{model_id}"
     
     headers = {
-        "Authorization": f"Bearer {HF_TOKEN}",
+        "Authorization": f"Bearer {LLM_KEY}",
         "Content-Type": "application/json",
     }
     
