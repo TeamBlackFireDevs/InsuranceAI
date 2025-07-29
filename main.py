@@ -171,66 +171,42 @@ def find_relevant_chunks(question: str, chunks: List[str], top_k: int = 3) -> Li
 
 
 async def call_huggingface_with_retry(messages: List[Dict], max_tokens: int = 1000, max_retries: int = 3) -> str:
-    """Hugging Face Inference API call with retry logic"""
+    """Hugging Face Router API call with retry logic"""
     if not LLM_KEY:
-        print("❌ ERROR: LLM_KEY environment variable not set")
-        raise HTTPException(status_code=500, detail="LLM_KEY environment variable not set")
+        print("❌ ERROR: HF_TOKEN environment variable not set")
+        raise HTTPException(status_code=500, detail="HF_TOKEN environment variable not set")
     
-    print(f"🔑 Using LLM_KEY: {LLM_KEY[:10]}...")
+    print(f"🔑 Using HF_TOKEN: {LLM_KEY[:10]}...")
     
     # Apply rate limiting
     await rate_limiter.wait_if_needed()
     
-    # Use the same Qwen model on Hugging Face
-    model_id = "Qwen/Qwen2.5-72B-Instruct"
-    url = f"https://api-inference.huggingface.co/models/{model_id}"
+    # Use HF Router endpoint (OpenAI-compatible)
+    url = "https://router.huggingface.co/v1/chat/completions"
     
     headers = {
         "Authorization": f"Bearer {LLM_KEY}",
         "Content-Type": "application/json",
     }
     
-    # Convert OpenAI-style messages to single prompt
-    prompt = ""
-    for message in messages:
-        if message["role"] == "system":
-            prompt += f"System: {message['content']}\n\n"
-        elif message["role"] == "user":
-            prompt += f"User: {message['content']}\n\n"
-    prompt += "Assistant:"
-    
     payload = {
-        "inputs": prompt,
-        "parameters": {
-            "max_new_tokens": max_tokens,
-            "temperature": 0.1,
-            "return_full_text": False,
-            "do_sample": True
-        }
+        "model": "Qwen/Qwen3-235B-A22B-Instruct-2507:novita",  # Your model
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": 0.1,
+        "stream": False
     }
     
-    print(f"📤 Making HF API request...")
+    print(f"📤 Making HF Router API request...")
     
     for attempt in range(max_retries):
         try:
-            print(f"🤖 Hugging Face API call attempt {attempt + 1}/{max_retries}")
+            print(f"🤖 Hugging Face Router API call attempt {attempt + 1}/{max_retries}")
             response = requests.post(url, headers=headers, json=payload, timeout=120)
             
             print(f"📊 Response Status: {response.status_code}")
             
-            if response.status_code == 503:
-                # Model loading
-                try:
-                    error_data = response.json()
-                    if "loading" in str(error_data).lower():
-                        wait_time = error_data.get("estimated_time", 20)
-                        print(f"🔄 Model loading. Waiting {wait_time}s...")
-                        await asyncio.sleep(wait_time)
-                        continue
-                except:
-                    pass
-            
-            elif response.status_code == 429:
+            if response.status_code == 429:
                 try:
                     error_data = response.json()
                     print(f"❌ Rate Limit Error: {json.dumps(error_data, indent=2)}")
@@ -250,7 +226,7 @@ async def call_huggingface_with_retry(messages: List[Dict], max_tokens: int = 10
                 print(f"❌ API Error {response.status_code}: {response.text}")
                 raise HTTPException(status_code=response.status_code, detail=f"API error: {response.text}")
             
-            # Parse successful response
+            # Parse successful response (same as OpenRouter format)
             try:
                 result = response.json()
                 print(f"✅ API Response received: {len(str(result))} characters")
@@ -259,17 +235,13 @@ async def call_huggingface_with_retry(messages: List[Dict], max_tokens: int = 10
                 print(f"Raw response: {response.text[:500]}...")
                 raise HTTPException(status_code=500, detail="Invalid JSON response from API")
             
-            # HF returns different response format
-            if isinstance(result, list) and len(result) > 0:
-                if "generated_text" in result[0]:
-                    content = result[0]["generated_text"]
-                    print(f"✅ Successfully extracted content: {len(content)} characters")
-                    return content
-                else:
-                    print(f"❌ Unexpected response structure: {json.dumps(result, indent=2)}")
-                    raise HTTPException(status_code=500, detail="Unexpected API response format")
+            # Same response format as OpenRouter
+            if 'choices' in result and len(result['choices']) > 0:
+                content = result['choices'][0]['message']['content']
+                print(f"✅ Successfully extracted content: {len(content)} characters")
+                return content
             else:
-                print(f"❌ Unexpected API response: {json.dumps(result, indent=2)}")
+                print(f"❌ Unexpected response structure: {json.dumps(result, indent=2)}")
                 raise HTTPException(status_code=500, detail="Unexpected API response format")
         
         except requests.exceptions.Timeout as e:
@@ -304,6 +276,7 @@ async def call_huggingface_with_retry(messages: List[Dict], max_tokens: int = 10
     
     print("❌ All retry attempts exhausted")
     raise HTTPException(status_code=500, detail="Max retries exceeded")
+
 
 
 
