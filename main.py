@@ -376,7 +376,7 @@ async def process_questions_in_batches(questions: List[str], relevant_chunks_map
         
         # Longer delay between batches
         if i + batch_size < len(questions):
-            sleep_time = 2
+            sleep_time = 1
             print(f"⏳ Waiting {sleep_time}s before next batch...")
             await asyncio.sleep(sleep_time)
     
