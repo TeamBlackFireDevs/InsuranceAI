@@ -47,7 +47,7 @@ class QARequest(BaseModel):
 
 
 class RateLimiter:
-    def __init__(self, max_requests_per_minute=10):  # More conservative
+    def __init__(self, max_requests_per_minute=30):  # More conservative
         self.max_requests = max_requests_per_minute
         self.requests = []
 
@@ -143,32 +143,31 @@ def chunk_text_memory_efficient(text: str, chunk_size: int = 1200, overlap: int 
     return chunks
 
 
-def find_relevant_chunks(question: str, chunks: List[str], top_k: int = 2) -> List[str]:
+def find_relevant_chunks(question: str, chunks: List[str], top_k: int = 3) -> List[str]:
+    """Faster chunk relevance detection"""
     if not chunks:
         return []
     
-    question_words = set(word.lower().strip('.,!?;:"()[]') for word in question.split() if len(word) > 2)
+    question_lower = question.lower()
+    
+    # Use simple keyword matching for speed
     scored_chunks = []
-    
     for chunk in chunks:
-        chunk_words = set(word.lower().strip('.,!?;:"()[]') for word in chunk.split() if len(word) > 2)
-        common_words = question_words.intersection(chunk_words)
-        word_overlap_score = len(common_words) / max(len(question_words), 1)
-        
-        phrase_score = 0
-        question_lower = question.lower()
         chunk_lower = chunk.lower()
-        key_terms = ['waiting period', 'pre-existing', 'exclusion', 'coverage', 'benefit', 'limit']
         
-        for term in key_terms:
-            if term in question_lower and term in chunk_lower:
-                phrase_score += 0.3
+        # Quick keyword-based scoring
+        score = 0
+        for word in question_lower.split():
+            if len(word) > 3 and word in chunk_lower:
+                score += 1
         
-        total_score = word_overlap_score + phrase_score
-        scored_chunks.append((total_score, chunk))
+        if score > 0:
+            scored_chunks.append((score, chunk))
     
+    # Return top chunks quickly
     scored_chunks.sort(reverse=True, key=lambda x: x[0])
-    return [chunk for _, chunk in scored_chunks[:top_k] if _ > 0.1]
+    return [chunk for _, chunk in scored_chunks[:top_k]]
+
 
 
 async def call_openrouter_with_retry(messages: List[Dict], max_tokens: int = 1000, max_retries: int = 3) -> str:
@@ -288,100 +287,39 @@ async def call_openrouter_with_retry(messages: List[Dict], max_tokens: int = 100
     raise HTTPException(status_code=500, detail="Max retries exceeded")
 
 
-async def process_questions_in_batches(questions: List[str], relevant_chunks_map: Dict[str, List[str]]) -> List[Dict]:
-    results = []
-    batch_size = 5  
+async def process_questions_concurrently(questions: List[str], relevant_chunks_map: Dict[str, List[str]]) -> List[str]:
+    """Process all questions concurrently instead of sequential batches"""
     
-    print(f"🔄 Processing {len(questions)} questions in batches of {batch_size}")
-    
-    for i in range(0, len(questions), batch_size):
-        batch_questions = questions[i:i + batch_size]
-        batch_num = i // batch_size + 1
+    async def process_single_question(question: str) -> str:
+        relevant_chunks = relevant_chunks_map.get(question, [])
+        context = "\n".join(relevant_chunks[:2])
         
-        print(f"\n🔄 === PROCESSING BATCH {batch_num} ===")
-        print(f"🔄 Questions {i + 1}-{min(i + batch_size, len(questions))}")
-        print(f"🔄 Batch questions: {[q[:50] + '...' for q in batch_questions]}")
-        
-        # Build context for this batch
-        batch_context = ""
-        batch_prompt = "You are an insurance policy expert. Answer the following questions based on the policy document sections provided.\n\n"
-        
-        for j, question in enumerate(batch_questions):
-            relevant_chunks = relevant_chunks_map.get(question, [])
-            print(f"🔍 Question {j+1} has {len(relevant_chunks)} relevant chunks")
-            
-            if relevant_chunks:
-                batch_context += f"\n--- Context for Question {j + 1} ---\n"
-                batch_context += "\n".join(relevant_chunks[:2])  # Top 2 chunks only
-            
-            batch_prompt += f"\nQuestion {j + 1}: {question}\n"
-        
-        batch_prompt += f"\nPolicy Document Sections:\n{batch_context}\n\n"
-        batch_prompt += "Instructions:\n"
-        batch_prompt += "- Answer each question separately and clearly\n"
-        batch_prompt += "- Number your answers (Answer 1:, Answer 2:, etc.)\n"
-        batch_prompt += "- Base answers ONLY on the provided policy sections\n"
-        batch_prompt += "- If information is not found, state 'Information not found in provided sections'\n"
-        batch_prompt += "- Be specific and cite relevant policy sections when possible\n"
-        
-        print(f"📝 Batch prompt length: {len(batch_prompt)} characters")
+        prompt = f"""Answer this question based on the policy document:
+        Question: {question}
+        Context: {context}
+        Answer briefly and specifically based only on the provided context."""
         
         messages = [
-            {"role": "system", "content": "You are a helpful insurance policy analyst."},
-            {"role": "user", "content": batch_prompt}
+            {"role": "system", "content": "You are an insurance policy analyst."},
+            {"role": "user", "content": prompt}
         ]
         
-        try:
-            print(f"📤 Sending batch {batch_num} to OpenRouter...")
-            
-            # Get batch response
-            batch_response = await call_openrouter_with_retry(messages, max_tokens=1500)
-            
-            print(f"📥 Received response for batch {batch_num}: {len(batch_response)} characters")
-            print(f"📥 Response preview: {batch_response[:200]}...")
-            
-            # Parse batch response into individual answers
-            answers = parse_batch_response(batch_response, len(batch_questions))
-            print(f"📋 Parsed {len(answers)} answers from batch response")
-            
-            # Create response objects
-            for j, question in enumerate(batch_questions):
-                answer = answers[j] if j < len(answers) else "Error processing this question"
-                evidence = "\n".join(relevant_chunks_map.get(question, [])[:1])  # First chunk as evidence
-                
-                result_obj = {
-                    "question": question,
-                    "answer": answer
-                }
-                
-                results.append(answer)
-                print(f"✅ Added answer {j+1} for question: {question[:50]}...")
-        
-        except Exception as e:
-            print(f"❌ ERROR PROCESSING BATCH {batch_num}")
-            print(f"❌ Error type: {type(e).__name__}")
-            print(f"❌ Error message: {str(e)}")
-            print(f"❌ Full traceback:")
-            traceback.print_exc()
-            
-            # Add error responses for this batch
-            for question in batch_questions:
-                error_answer = f"Error processing question in batch {batch_num}: {str(e)}"
-                error_result = {
-                    "question": question,
-                    "answer": f"Error processing question in batch {batch_num}: {str(e)}"
-                }
-                results.append(error_answer)
-                print(f"❌ Added error response for: {question[:50]}...")
-        
-        # Longer delay between batches
-        if i + batch_size < len(questions):
-            sleep_time = 1
-            print(f"⏳ Waiting {sleep_time}s before next batch...")
-            await asyncio.sleep(sleep_time)
+        return await call_openrouter_with_retry(messages, max_tokens=500)
     
-    print(f"🏁 Completed processing all batches. Total results: {len(results)}")
-    return results
+    # Process ALL questions concurrently
+    tasks = [process_single_question(q) for q in questions]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Handle any exceptions
+    final_results = []
+    for result in results:
+        if isinstance(result, Exception):
+            final_results.append(f"Error processing question: {str(result)}")
+        else:
+            final_results.append(result)
+    
+    return final_results
+
 
 
 def parse_batch_response(response: str, expected_count: int) -> List[str]:
@@ -467,7 +405,7 @@ async def document_qa(
         
         # Process questions in batches
         print("🚀 Starting batch processing...")
-        responses = await process_questions_in_batches(req.questions, relevant_chunks_map)
+        responses = await process_questions_concurrently(req.questions, relevant_chunks_map)
         
         print(f"✅ Successfully processed all questions. Returning {len(responses)} responses")
         return {"answers": responses}
