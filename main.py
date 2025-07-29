@@ -354,7 +354,7 @@ async def process_questions_in_batches(questions: List[str], relevant_chunks_map
                     "answer": answer
                 }
                 
-                results.append(result_obj)
+                results.append(answer)
                 print(f"✅ Added answer {j+1} for question: {question[:50]}...")
         
         except Exception as e:
