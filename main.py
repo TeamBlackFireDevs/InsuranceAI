@@ -24,7 +24,7 @@ app = FastAPI(
 
 load_dotenv()
 # Get OpenRouter API key
-LLM_KEY = os.getenv("LLM_KEY")
+LLM_KEY = os.getenv("HF_TOKEN")
 
 
 # Security scheme for bearer token
@@ -170,53 +170,75 @@ def find_relevant_chunks(question: str, chunks: List[str], top_k: int = 3) -> Li
 
 
 
-async def call_openrouter_with_retry(messages: List[Dict], max_tokens: int = 1000, max_retries: int = 3) -> str:
-    """OpenRouter API call with enhanced debugging and retry logic"""
+async def call_huggingface_with_retry(messages: List[Dict], max_tokens: int = 1000, max_retries: int = 3) -> str:
+    """Hugging Face Inference API call with retry logic"""
+    if not HF_TOKEN:
+        print("❌ ERROR: HF_TOKEN environment variable not set")
+        raise HTTPException(status_code=500, detail="HF_TOKEN environment variable not set")
     
-    if not LLM_KEY:
-        print("❌ ERROR: LLM_Key environment variable not set")
-        raise HTTPException(status_code=500, detail="LLM_Key environment variable not set")
-    
-    print(f"🔑 Using LLM_Key: {LLM_KEY[:10]}...")
+    print(f"🔑 Using HF_TOKEN: {HF_TOKEN[:10]}...")
     
     # Apply rate limiting
     await rate_limiter.wait_if_needed()
     
-    url = "https://openrouter.ai/api/v1/chat/completions"
+    # Use the same Qwen model on Hugging Face
+    model_id = "Qwen/Qwen2.5-72B-Instruct"
+    url = f"https://api-inference.huggingface.co/models/{model_id}"
+    
     headers = {
-        "Authorization": f"Bearer {LLM_KEY}",
+        "Authorization": f"Bearer {HF_TOKEN}",
         "Content-Type": "application/json",
     }
     
+    # Convert OpenAI-style messages to single prompt
+    prompt = ""
+    for message in messages:
+        if message["role"] == "system":
+            prompt += f"System: {message['content']}\n\n"
+        elif message["role"] == "user":
+            prompt += f"User: {message['content']}\n\n"
+    prompt += "Assistant:"
+    
     payload = {
-        "model": "qwen/qwen3-235b-a22b-2507:free",
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": 0.1,
-        "stream": False
+        "inputs": prompt,
+        "parameters": {
+            "max_new_tokens": max_tokens,
+            "temperature": 0.1,
+            "return_full_text": False,
+            "do_sample": True
+        }
     }
     
-    print(f"📤 Making API request with {len(messages)} messages...")
+    print(f"📤 Making HF API request...")
     
     for attempt in range(max_retries):
         try:
-            print(f"🤖 OpenRouter API call attempt {attempt + 1}/{max_retries}")
-            
+            print(f"🤖 Hugging Face API call attempt {attempt + 1}/{max_retries}")
             response = requests.post(url, headers=headers, json=payload, timeout=120)
             
-            # 🔥 ENHANCED DEBUG LOGGING
             print(f"📊 Response Status: {response.status_code}")
-            print(f"📊 Response Headers: {dict(response.headers)}")
             
-            if response.status_code == 429:  # Rate limit hit
+            if response.status_code == 503:
+                # Model loading
                 try:
                     error_data = response.json()
-                    print(f"❌ Rate Limit Error Details: {json.dumps(error_data, indent=2)}")
+                    if "loading" in str(error_data).lower():
+                        wait_time = error_data.get("estimated_time", 20)
+                        print(f"🔄 Model loading. Waiting {wait_time}s...")
+                        await asyncio.sleep(wait_time)
+                        continue
                 except:
-                    print(f"❌ Rate Limit Error (raw response): {response.text}")
+                    pass
+            
+            elif response.status_code == 429:
+                try:
+                    error_data = response.json()
+                    print(f"❌ Rate Limit Error: {json.dumps(error_data, indent=2)}")
+                except:
+                    print(f"❌ Rate Limit Error (raw): {response.text}")
                 
-                wait_time = 2 ** attempt * 10  # 10s, 20s, 40s
-                print(f"⚠️ Rate limit hit. Waiting {wait_time}s before retry...")
+                wait_time = 2 ** attempt * 10
+                print(f"⚠️ Rate limit hit. Waiting {wait_time}s...")
                 await asyncio.sleep(wait_time)
                 continue
             
@@ -237,14 +259,19 @@ async def call_openrouter_with_retry(messages: List[Dict], max_tokens: int = 100
                 print(f"Raw response: {response.text[:500]}...")
                 raise HTTPException(status_code=500, detail="Invalid JSON response from API")
             
-            if 'choices' in result and len(result['choices']) > 0:
-                content = result['choices'][0]['message']['content']
-                print(f"✅ Successfully extracted content: {len(content)} characters")
-                return content
+            # HF returns different response format
+            if isinstance(result, list) and len(result) > 0:
+                if "generated_text" in result[0]:
+                    content = result[0]["generated_text"]
+                    print(f"✅ Successfully extracted content: {len(content)} characters")
+                    return content
+                else:
+                    print(f"❌ Unexpected response structure: {json.dumps(result, indent=2)}")
+                    raise HTTPException(status_code=500, detail="Unexpected API response format")
             else:
-                print(f"❌ Unexpected API response structure: {json.dumps(result, indent=2)}")
+                print(f"❌ Unexpected API response: {json.dumps(result, indent=2)}")
                 raise HTTPException(status_code=500, detail="Unexpected API response format")
-                
+        
         except requests.exceptions.Timeout as e:
             print(f"⏰ Timeout error on attempt {attempt + 1}: {str(e)}")
             if attempt < max_retries - 1:
@@ -254,14 +281,9 @@ async def call_openrouter_with_retry(messages: List[Dict], max_tokens: int = 100
                 continue
             print("❌ Final timeout - giving up")
             raise HTTPException(status_code=504, detail="API timeout after retries")
-            
+        
         except requests.exceptions.RequestException as e:
             print(f"🔄 Request error on attempt {attempt + 1}: {str(e)}")
-            print(f"🔄 Error type: {type(e).__name__}")
-            if hasattr(e, 'response') and e.response is not None:
-                print(f"🔄 Error response status: {e.response.status_code}")
-                print(f"🔄 Error response text: {e.response.text}")
-            
             if attempt < max_retries - 1:
                 wait_time = 2 ** attempt * 5
                 print(f"🔄 Retrying in {wait_time}s...")
@@ -272,9 +294,6 @@ async def call_openrouter_with_retry(messages: List[Dict], max_tokens: int = 100
         
         except Exception as e:
             print(f"💥 Unexpected error on attempt {attempt + 1}: {str(e)}")
-            print(f"💥 Error type: {type(e).__name__}")
-            print(f"💥 Full traceback:")
-            traceback.print_exc()
             if attempt < max_retries - 1:
                 wait_time = 2 ** attempt * 5
                 print(f"💥 Retrying in {wait_time}s...")
@@ -285,6 +304,7 @@ async def call_openrouter_with_retry(messages: List[Dict], max_tokens: int = 100
     
     print("❌ All retry attempts exhausted")
     raise HTTPException(status_code=500, detail="Max retries exceeded")
+
 
 
 async def process_questions_concurrently(questions: List[str], relevant_chunks_map: Dict[str, List[str]]) -> List[str]:
@@ -304,7 +324,7 @@ async def process_questions_concurrently(questions: List[str], relevant_chunks_m
             {"role": "user", "content": prompt}
         ]
         
-        return await call_openrouter_with_retry(messages, max_tokens=500)
+        return await call_huggingface_with_retry(messages, max_tokens=500)
     
     # Process ALL questions concurrently
     tasks = [process_single_question(q) for q in questions]
@@ -358,17 +378,18 @@ def parse_batch_response(response: str, expected_count: int) -> List[str]:
 @app.get("/")
 async def root():
     return {
-        "message": "Insurance Claims Processing API - Local Development (OpenRouter)",
+        "message": "Insurance Claims Processing API - Local Development (Hugging Face)",
         "version": "1.0.0",
-        "model": "qwen/qwen3-235b-a22b-2507:free",
-        "provider": "OpenRouter",
+        "model": "Qwen/Qwen2.5-72B-Instruct",
+        "provider": "Hugging Face",
         "endpoints": {
             "document_qa": "/api/v1/hackrx/run"
         },
         "status": "running",
         "server": "localhost:8000",
-        "llm_key_configured": bool(LLM_KEY)
+        "hf_token_configured": bool(LLM_KEY)
     }
+
 
 
 @app.post("/api/v1/hackrx/run")
