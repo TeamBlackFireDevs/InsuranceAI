@@ -366,11 +366,12 @@ async def process_questions_in_batches(questions: List[str], relevant_chunks_map
             
             # Add error responses for this batch
             for question in batch_questions:
+                error_answer = f"Error processing question in batch {batch_num}: {str(e)}"
                 error_result = {
                     "question": question,
                     "answer": f"Error processing question in batch {batch_num}: {str(e)}"
                 }
-                results.append(error_result)
+                results.append(error_answer)
                 print(f"❌ Added error response for: {question[:50]}...")
         
         # Longer delay between batches
