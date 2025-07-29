@@ -155,7 +155,7 @@ def top_k_chunks(question: str, chunks: List[str], k: int = 5) -> List[str]:
 # --------------------------------------------------------------------------- #
 
 HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions"
-MODEL_NAME = "mistralai/Mistral-7B-Instruct-v0.3"
+MODEL_NAME = "mistralai/Mistral-7B-Instruct-v0.2:featherless-ai"
 
 async def call_hf_chat(messages: List[Dict], max_tokens: int = 800) -> str:
     """Call HF chat completion API with rate limiting."""
