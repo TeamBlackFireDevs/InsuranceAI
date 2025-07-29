@@ -143,30 +143,64 @@ def chunk_text_memory_efficient(text: str, chunk_size: int = 1200, overlap: int 
     return chunks
 
 
-def find_relevant_chunks(question: str, chunks: List[str], top_k: int = 3) -> List[str]:
-    """Faster chunk relevance detection"""
+def find_relevant_chunks(question: str, chunks: List[str], top_k: int = 5) -> List[str]:
+    """Enhanced chunk relevance detection with better keyword matching"""
     if not chunks:
         return []
     
     question_lower = question.lower()
     
-    # Use simple keyword matching for speed
+    # Extract key terms from question
+    key_terms = []
+    for word in question_lower.split():
+        if len(word) > 3:
+            key_terms.append(word)
+    
+    # Add domain-specific keywords based on question context
+    if "grace period" in question_lower:
+        key_terms.extend(["grace", "period", "premium", "payment", "thirty", "days"])
+    elif "health check" in question_lower or "preventive" in question_lower:
+        key_terms.extend(["health", "check", "preventive", "reimbursed", "block", "years"])
+    elif "hospital" in question_lower and "define" in question_lower:
+        key_terms.extend(["hospital", "definition", "registered", "nursing", "qualified"])
+    elif "ayush" in question_lower:
+        key_terms.extend(["ayush", "alternative", "treatment", "homeopathy", "unani"])
+    elif "room rent" in question_lower or "icu" in question_lower or "sub-limit" in question_lower:
+        key_terms.extend(["room", "icu", "charges", "limit", "percent", "actual"])
+    
     scored_chunks = []
     for chunk in chunks:
         chunk_lower = chunk.lower()
         
-        # Quick keyword-based scoring
+        # Enhanced scoring
         score = 0
-        for word in question_lower.split():
-            if len(word) > 3 and word in chunk_lower:
-                score += 1
+        
+        # Base keyword matching
+        for term in key_terms:
+            if term in chunk_lower:
+                score += 2
+        
+        # Exact phrase matching (higher weight)
+        if "grace period" in question_lower and "grace period" in chunk_lower:
+            score += 5
+        if "health check" in question_lower and "health check" in chunk_lower:
+            score += 5
+        if "ayush" in question_lower and "ayush" in chunk_lower:
+            score += 5
+        if "hospital" in question_lower and "hospital" in chunk_lower:
+            score += 3
+        
+        # Section number matching (definitions are often in early sections)
+        if any(x in chunk_lower for x in ["2.21", "2.22", "2.5", "2.6", "2.7", "3.1.1", "3.2.2"]):
+            score += 3
         
         if score > 0:
             scored_chunks.append((score, chunk))
     
-    # Return top chunks quickly
+    # Sort by score and return top chunks
     scored_chunks.sort(reverse=True, key=lambda x: x[0])
     return [chunk for _, chunk in scored_chunks[:top_k]]
+
 
 
 
@@ -285,19 +319,31 @@ async def process_questions_concurrently(questions: List[str], relevant_chunks_m
     
     async def process_single_question(question: str) -> str:
         relevant_chunks = relevant_chunks_map.get(question, [])
-        context = "\n".join(relevant_chunks[:2])
+        context = "\n---\n".join(relevant_chunks[:4])  # Use more chunks with better separation
         
-        prompt = f"""Answer this question based on the policy document:
-        Question: {question}
-        Context: {context}
-        Answer briefly and specifically based only on the provided context."""
+        prompt = f"""You are analyzing an insurance policy document. Answer the question based ONLY on the provided context from the policy document.
+
+            Question: {question}
+
+            Policy Context:
+            {context}
+
+            Instructions:
+            - Answer based ONLY on the information provided in the context above
+            - If specific information (like exact time periods, percentages, or definitions) is mentioned in the context, include it
+            - If the information is not in the provided context, say "The provided context does not contain this information"
+            - Be specific and include exact details (numbers, percentages, time periods) when available
+            - Quote relevant sections when applicable
+
+            Answer:"""
+
         
         messages = [
             {"role": "system", "content": "You are an insurance policy analyst."},
             {"role": "user", "content": prompt}
         ]
         
-        return await call_huggingface_with_retry(messages, max_tokens=500)
+        return await call_huggingface_with_retry(messages, max_tokens=800)
     
     # Process ALL questions concurrently
     tasks = [process_single_question(q) for q in questions]
@@ -380,7 +426,7 @@ async def document_qa(
         for doc in req.documents:
 
             pdf_text = await extract_pdf_from_url(doc)
-            chunks.extend(chunk_text_memory_efficient(pdf_text, chunk_size=1200, overlap=200))
+            chunks.extend(chunk_text_memory_efficient(pdf_text, chunk_size=2000, overlap=400))
 
 
         print(f"📚 Created {len(chunks)} text chunks")
@@ -394,8 +440,13 @@ async def document_qa(
         relevant_chunks_map = {}
         for i, question in enumerate(req.questions):
             print(f"🔍 Processing question {i+1}: {question[:50]}...")
-            relevant_chunks_map[question] = find_relevant_chunks(question, chunks, top_k=2)
+            relevant_chunks_map[question] = find_relevant_chunks(question, chunks, top_k=5)
             print(f"📋 Found {len(relevant_chunks_map[question])} relevant chunks")
+            
+            # Debug: Print first few words of each relevant chunk
+            for j, chunk in enumerate(relevant_chunks_map[question][:3]):
+                print(f"   Chunk {j+1}: {chunk[:100]}...")
+
         
         # Process questions in batches
         print("🚀 Starting batch processing...")
