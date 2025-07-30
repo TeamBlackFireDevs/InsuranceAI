@@ -531,7 +531,7 @@ Answer:"""
                 answers.append(answer.strip())
 
                 # Rate limiting delay
-                await asyncio.sleep(3)
+                #await asyncio.sleep(3)
 
             except Exception as e:
                 print(f"❌ Error processing question {i}: {e}")
