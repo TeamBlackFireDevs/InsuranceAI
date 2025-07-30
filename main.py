@@ -1,7 +1,7 @@
 """
-InsuranceAI - Fixed Version for PyMuPDF Document Closed Error
+InsuranceAI - Gemini API Version
 ----
-Key fix: Proper handling of PyMuPDF document lifecycle
+Updated to use Google Gemini 2.0 Flash API instead of Hugging Face
 """
 
 from fastapi import FastAPI, HTTPException, Depends
@@ -26,13 +26,13 @@ import string
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="Insurance Claims Processing API - Fixed",
-    description="High-accuracy insurance claims processing with PyMuPDF fix",
-    version="3.3.0"
+    title="Insurance Claims Processing API - Gemini",
+    description="High-accuracy insurance claims processing with Google Gemini API",
+    version="4.0.0"
 )
 
 load_dotenv()
-LLM_KEY = os.getenv("HF_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 security = HTTPBearer()
 
 class QARequest(BaseModel):
@@ -283,7 +283,7 @@ class EnhancedRetriever:
             return chunks[:min(2, len(chunks))] if chunks else []
 
 class AsyncRateLimiter:
-    def __init__(self, max_requests_per_minute=15):
+    def __init__(self, max_requests_per_minute=30):  # Gemini has higher rate limits
         self.max_requests = max_requests_per_minute
         self.requests = []
         self.lock = asyncio.Lock()
@@ -334,7 +334,7 @@ async def extract_pdf_from_url_fast(url: str) -> str:
         pdf_content = response.content
         print(f"📖 Extracting text from PDF ({len(pdf_content)} bytes)...")
 
-        # FIXED: Save to temporary file first to avoid document closed error
+        # Save to temporary file first to avoid document closed error
         with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
             temp_file.write(pdf_content)
             temp_file.flush()
@@ -392,8 +392,8 @@ async def extract_pdf_from_url_fast(url: str) -> str:
         print(f"❌ PDF extraction error: {str(e)}")
         raise HTTPException(status_code=400, detail=f"PDF extraction failed: {str(e)}")
 
-def create_enhanced_prompt(question: str, relevant_chunks: List[Dict]) -> List[Dict]:
-    """Create prompt with error handling"""
+def create_enhanced_prompt(question: str, relevant_chunks: List[Dict]) -> str:
+    """Create prompt for Gemini API"""
     try:
         context_parts = []
         for i, chunk in enumerate(relevant_chunks[:3], 1):
@@ -418,73 +418,83 @@ Instructions:
 
 Answer:"""
 
-        return [
-            {"role": "system", "content": "You are an expert insurance policy analyst. Provide accurate answers based only on the provided context."},
-            {"role": "user", "content": prompt}
-        ]
+        return prompt
 
     except Exception as e:
         print(f"⚠️ Error creating prompt: {e}")
-        return [
-            {"role": "system", "content": "You are an insurance expert."},
-            {"role": "user", "content": f"Answer this insurance question: {question}"}
-        ]
+        return f"Answer this insurance question based on the policy context: {question}"
 
-async def call_hf_router_enhanced(messages: List[Dict], max_tokens: int = 600) -> str:
-    """API call with error handling"""
-    if not LLM_KEY:
-        raise HTTPException(status_code=500, detail="HF_TOKEN environment variable not set")
+async def call_gemini_api(prompt: str) -> str:
+    """Call Google Gemini API"""
+    if not GEMINI_API_KEY:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY environment variable not set")
 
     await rate_limiter.acquire()
 
-    API_URL = "https://router.huggingface.co/v1/chat/completions"
+    API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
     headers = {
-        "Authorization": f"Bearer {LLM_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "X-goog-api-key": GEMINI_API_KEY
     }
 
     payload = {
-        "messages": messages,
-        "model": "mistralai/Mistral-7B-Instruct-v0.2:featherless-ai",
-        "max_tokens": max_tokens,
-        "temperature": 0.1,
-        "top_p": 0.9,
-        "stream": False
+        "contents": [
+            {
+                "parts": [
+                    {
+                        "text": prompt
+                    }
+                ]
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.1,
+            "topP": 0.9,
+            "maxOutputTokens": 800
+        }
     }
 
-    print(f"🤖 Making API call...")
+    print(f"🤖 Making Gemini API call...")
 
     try:
-        response = requests.post(API_URL, headers=headers, json=payload, timeout=120)
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.post(API_URL, headers=headers, json=payload)
 
-        if response.status_code == 429:
-            print("⏰ Rate limited, waiting...")
-            await asyncio.sleep(20)
-            response = requests.post(API_URL, headers=headers, json=payload, timeout=120)
+            if response.status_code == 429:
+                print("⏰ Rate limited, waiting...")
+                await asyncio.sleep(20)
+                response = await client.post(API_URL, headers=headers, json=payload)
 
-        response.raise_for_status()
-        result = response.json()
+            response.raise_for_status()
+            result = response.json()
 
-        if 'choices' in result and len(result['choices']) > 0:
-            content = result['choices'][0]['message']['content']
-            print(f"✅ Received response: {len(content)} characters")
-            return content
-        else:
-            raise HTTPException(status_code=500, detail="Unexpected API response format")
+            if 'candidates' in result and len(result['candidates']) > 0:
+                content = result['candidates'][0]['content']['parts'][0]['text']
+                print(f"✅ Received Gemini response: {len(content)} characters")
+                return content
+            else:
+                print(f"❌ Unexpected Gemini API response: {result}")
+                raise HTTPException(status_code=500, detail="Unexpected Gemini API response format")
 
+    except httpx.TimeoutException:
+        print("❌ Gemini API request timed out")
+        raise HTTPException(status_code=500, detail="Gemini API request timed out")
+    except httpx.RequestError as e:
+        print(f"❌ Gemini API request failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Gemini API request failed: {str(e)}")
     except Exception as e:
-        print(f"❌ API request failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"API request failed: {str(e)}")
+        print(f"❌ Unexpected error in Gemini API call: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 @app.get("/")
 async def root():
     return {
-        "message": "Insurance Claims Processing API - Fixed",
-        "version": "3.3.0",
-        "model": "mistralai/Mistral-7B-Instruct-v0.2:featherless-ai",
-        "provider": "Hugging Face Router",
-        "status": "fixed_pymupdf",
-        "hf_token_configured": bool(LLM_KEY)
+        "message": "Insurance Claims Processing API - Gemini",
+        "version": "4.0.0",
+        "model": "gemini-2.0-flash",
+        "provider": "Google Gemini API",
+        "status": "gemini_powered",
+        "gemini_api_key_configured": bool(GEMINI_API_KEY)
     }
 
 @app.post("/api/v1/hackrx/run")
@@ -492,14 +502,14 @@ async def document_qa(
     req: QARequest,
     token: str = Depends(verify_bearer_token)
 ):
-    """Fixed Document Q&A with proper PyMuPDF handling"""
+    """Document Q&A powered by Google Gemini"""
     start_time = time.time()
 
     try:
-        print(f"🚀 Processing {len(req.questions)} questions with fixed PDF handling")
+        print(f"🚀 Processing {len(req.questions)} questions with Gemini API")
         print(f"📄 Documents to process: {len(req.documents)}")
 
-        # Step 1: Extract PDF text with fixed handling
+        # Step 1: Extract PDF text
         pdf_texts = []
         for i, doc_url in enumerate(req.documents):
             try:
@@ -519,7 +529,7 @@ async def document_qa(
         document_keywords = doc_analyzer.extract_document_keywords(all_text)
 
         # Step 3: Create chunks
-        chunker = EnhancedChunker(chunk_size=1000, overlap=150)
+        chunker = EnhancedChunker(chunk_size=1200, overlap=200)  # Slightly larger chunks for Gemini
         all_chunks = chunker.smart_chunk_with_context(all_text, document_keywords)
 
         if not all_chunks:
@@ -529,7 +539,7 @@ async def document_qa(
         del pdf_texts, all_text
         gc.collect()
 
-        # Step 4: Process questions
+        # Step 4: Process questions with Gemini
         retriever = EnhancedRetriever()
         answers = []
 
@@ -543,19 +553,20 @@ async def document_qa(
                     answers.append("No relevant information found in the provided policy documents.")
                     continue
 
-                messages = create_enhanced_prompt(question, relevant_chunks)
-                response = await call_hf_router_enhanced(messages)
+                prompt = create_enhanced_prompt(question, relevant_chunks)
+                response = await call_gemini_api(prompt)
                 answers.append(response.strip())
 
+                # Shorter delay for Gemini (higher rate limits)
                 if i < len(req.questions):
-                    await asyncio.sleep(3)  # Longer delay for stability
+                    await asyncio.sleep(2)
 
             except Exception as e:
                 print(f"❌ Error processing question {i}: {str(e)}")
                 answers.append(f"Error processing this question: {str(e)}")
 
         elapsed_time = time.time() - start_time
-        print(f"✅ Fixed processing completed in {elapsed_time:.2f} seconds")
+        print(f"✅ Gemini processing completed in {elapsed_time:.2f} seconds")
 
         return {"answers": answers}
 
@@ -567,11 +578,11 @@ async def document_qa(
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 if __name__ == "__main__":
-    print("🚀 Starting Fixed Insurance Claims Processing API...")
-    print(f"🔑 HF Token configured: {bool(LLM_KEY)}")
+    print("🚀 Starting Gemini-Powered Insurance Claims Processing API...")
+    print(f"🔑 Gemini API Key configured: {bool(GEMINI_API_KEY)}")
 
-    if not LLM_KEY:
-        print("❌ WARNING: HF_TOKEN environment variable not set!")
+    if not GEMINI_API_KEY:
+        print("❌ WARNING: GEMINI_API_KEY environment variable not set!")
 
     uvicorn.run(
         "main:app",
