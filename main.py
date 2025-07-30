@@ -1,11 +1,7 @@
 """
-InsuranceAI - Robust Version with Enhanced Error Handling
+InsuranceAI - Fixed Version for PyMuPDF Document Closed Error
 ----
-Key improvements:
-1. Better error handling and debugging
-2. Fallback mechanisms for PDF processing
-3. More robust chunk processing
-4. Enhanced logging for troubleshooting
+Key fix: Proper handling of PyMuPDF document lifecycle
 """
 
 from fastapi import FastAPI, HTTPException, Depends
@@ -30,9 +26,9 @@ import string
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="Insurance Claims Processing API - Robust",
-    description="High-accuracy insurance claims processing with enhanced error handling",
-    version="3.2.0"
+    title="Insurance Claims Processing API - Fixed",
+    description="High-accuracy insurance claims processing with PyMuPDF fix",
+    version="3.3.0"
 )
 
 load_dotenv()
@@ -50,10 +46,9 @@ class QARequest(BaseModel):
         return v
 
 class DocumentAnalyzer:
-    """Robust document analyzer for insurance policies"""
+    """Document analyzer for insurance policies"""
 
     def __init__(self):
-        # Base insurance terms
         self.base_insurance_terms = {
             'coverage', 'premium', 'deductible', 'policy', 'claim', 'benefit',
             'exclusion', 'waiting', 'grace', 'maternity', 'pre-existing',
@@ -69,35 +64,21 @@ class DocumentAnalyzer:
         }
 
     def extract_document_keywords(self, text: str) -> Dict[str, float]:
-        """Safely extract keywords with error handling"""
+        """Extract keywords with error handling"""
         try:
             if not text or len(text.strip()) < 10:
-                print("⚠️ Warning: Empty or very short text provided")
-                return {}
+                return {'policy': 0.1, 'insurance': 0.1, 'coverage': 0.1}
 
             text_lower = text.lower()
-
-            # Simple word extraction with error handling
-            words = []
-            try:
-                # Remove punctuation and split
-                translator = str.maketrans('', '', string.punctuation)
-                clean_text = text_lower.translate(translator)
-                words = [word for word in clean_text.split() if len(word) > 2]
-            except Exception as e:
-                print(f"⚠️ Error in word extraction: {e}")
-                # Fallback to simple split
-                words = text_lower.split()
+            translator = str.maketrans('', '', string.punctuation)
+            clean_text = text_lower.translate(translator)
+            words = [word for word in clean_text.split() if len(word) > 2]
 
             if not words:
-                print("⚠️ Warning: No words extracted from text")
-                return {}
+                return {'policy': 0.1, 'insurance': 0.1, 'coverage': 0.1}
 
-            # Count frequencies
             word_freq = Counter(words)
             total_words = len(words)
-
-            # Extract keywords
             document_keywords = {}
 
             # Add base insurance terms
@@ -111,26 +92,24 @@ class DocumentAnalyzer:
                 if freq > 1 and len(word) > 3:
                     document_keywords[word] = freq / total_words if total_words > 0 else 0
 
-            print(f"📊 Extracted {len(document_keywords)} keywords successfully")
+            print(f"📊 Extracted {len(document_keywords)} keywords")
             return document_keywords
 
         except Exception as e:
             print(f"❌ Error in keyword extraction: {e}")
-            # Return basic keywords as fallback
             return {'policy': 0.1, 'insurance': 0.1, 'coverage': 0.1}
 
 class EnhancedChunker:
-    """Robust chunking with error handling"""
+    """Text chunking with error handling"""
 
     def __init__(self, chunk_size: int = 1000, overlap: int = 150):
         self.chunk_size = chunk_size
         self.overlap = overlap
 
     def smart_chunk_with_context(self, text: str, document_keywords: Dict[str, float]) -> List[Dict]:
-        """Create chunks with robust error handling"""
+        """Create chunks with error handling"""
         try:
             if not text or len(text.strip()) < 10:
-                print("⚠️ Warning: Empty or very short text for chunking")
                 return []
 
             if len(text) <= self.chunk_size:
@@ -151,9 +130,7 @@ class EnhancedChunker:
             while start < len(text):
                 end = min(start + self.chunk_size, len(text))
 
-                # Try to break at natural boundaries
                 if end < len(text):
-                    # Look for good break points
                     for delimiter in ["\n\n", ". ", "\n", " "]:
                         last_pos = text.rfind(delimiter, start + self.chunk_size - 200, end)
                         if last_pos > start + self.chunk_size // 2:
@@ -161,7 +138,7 @@ class EnhancedChunker:
                             break
 
                 chunk_text = text[start:end].strip()
-                if chunk_text and len(chunk_text) > 10:  # Only add meaningful chunks
+                if chunk_text and len(chunk_text) > 10:
                     chunks.append({
                         "text": chunk_text,
                         "metadata": {
@@ -173,17 +150,15 @@ class EnhancedChunker:
                     })
                     chunk_id += 1
 
-                # Move start position with overlap
                 start = max(end - self.overlap, end)
                 if start >= len(text):
                     break
 
-            print(f"📚 Created {len(chunks)} chunks successfully")
+            print(f"📚 Created {len(chunks)} chunks")
             return chunks
 
         except Exception as e:
             print(f"❌ Error in chunking: {e}")
-            # Return single chunk as fallback
             return [{
                 "text": text[:self.chunk_size] if text else "",
                 "metadata": {
@@ -195,7 +170,7 @@ class EnhancedChunker:
             }]
 
 class QuestionAnalyzer:
-    """Robust question analyzer"""
+    """Question analyzer"""
 
     def __init__(self):
         self.question_types = {
@@ -208,31 +183,28 @@ class QuestionAnalyzer:
         }
 
     def analyze_question(self, question: str) -> Dict[str, any]:
-        """Safely analyze question"""
+        """Analyze question safely"""
         try:
             if not question:
                 return {'types': [], 'key_terms': [], 'insurance_terms': [], 'complexity': 0}
 
             question_lower = question.lower()
 
-            # Determine question type
             detected_types = []
             for q_type, keywords in self.question_types.items():
                 if any(keyword in question_lower for keyword in keywords):
                     detected_types.append(q_type)
 
-            # Extract key terms
             words = re.findall(r'\b[a-z]{3,}\b', question_lower)
             stop_words = {'what', 'how', 'when', 'where', 'why', 'the', 'and', 'for', 'with'}
             key_terms = [word for word in words if word not in stop_words]
 
-            # Insurance terms
             insurance_keywords = ['grace', 'waiting', 'maternity', 'cataract', 'premium', 'claim', 'coverage']
             insurance_terms = [term for term in insurance_keywords if term in question_lower]
 
             return {
                 'types': detected_types,
-                'key_terms': key_terms[:10],  # Limit to avoid issues
+                'key_terms': key_terms[:10],
                 'insurance_terms': insurance_terms,
                 'complexity': len(key_terms) + len(insurance_terms)
             }
@@ -242,44 +214,35 @@ class QuestionAnalyzer:
             return {'types': [], 'key_terms': [], 'insurance_terms': [], 'complexity': 0}
 
 class EnhancedRetriever:
-    """Robust chunk retrieval"""
+    """Chunk retrieval with scoring"""
 
     def __init__(self):
         self.analyzer = QuestionAnalyzer()
 
     def calculate_relevance_score(self, question: str, chunk: Dict, question_analysis: Dict) -> float:
-        """Calculate relevance score with error handling"""
+        """Calculate relevance score"""
         try:
             chunk_text = chunk.get("text", "").lower()
             if not chunk_text:
                 return 0.0
 
-            question_lower = question.lower()
-
-            # Simple keyword matching
             score = 0.0
 
-            # Check for question terms in chunk
             for term in question_analysis.get("key_terms", []):
                 if term in chunk_text:
                     score += 0.3
 
-            # Check for insurance terms
             for term in question_analysis.get("insurance_terms", []):
                 if term in chunk_text:
                     score += 0.5
 
-            # Check for question types
             for q_type in question_analysis.get("types", []):
-                if q_type == "definition" and any(word in chunk_text for word in ["means", "defined", "definition"]):
+                if q_type == "definition" and any(word in chunk_text for word in ["means", "defined"]):
                     score += 0.4
                 elif q_type == "coverage" and any(word in chunk_text for word in ["covered", "benefit"]):
                     score += 0.4
-                elif q_type == "exclusion" and any(word in chunk_text for word in ["excluded", "not covered"]):
-                    score += 0.4
 
-            # Basic text similarity
-            question_words = set(question_lower.split())
+            question_words = set(question.lower().split())
             chunk_words = set(chunk_text.split())
             if question_words and chunk_words:
                 overlap = len(question_words & chunk_words)
@@ -288,11 +251,10 @@ class EnhancedRetriever:
             return min(score, 1.0)
 
         except Exception as e:
-            print(f"⚠️ Error calculating relevance score: {e}")
-            return 0.1  # Return small score as fallback
+            return 0.1
 
     def retrieve_relevant_chunks(self, question: str, chunks: List[Dict], top_k: int = 4) -> List[Dict]:
-        """Retrieve relevant chunks with error handling"""
+        """Retrieve relevant chunks"""
         try:
             if not chunks:
                 return []
@@ -305,15 +267,12 @@ class EnhancedRetriever:
                     score = self.calculate_relevance_score(question, chunk, question_analysis)
                     if score > 0.05:
                         scored_chunks.append((score, chunk))
-                except Exception as e:
-                    print(f"⚠️ Error scoring chunk: {e}")
+                except Exception:
                     continue
 
-            # Sort and return top chunks
             scored_chunks.sort(reverse=True, key=lambda x: x[0])
             result = [chunk for _, chunk in scored_chunks[:top_k]]
 
-            # If no good chunks found, return first few chunks as fallback
             if not result and chunks:
                 result = chunks[:min(2, len(chunks))]
 
@@ -321,11 +280,10 @@ class EnhancedRetriever:
 
         except Exception as e:
             print(f"❌ Error in chunk retrieval: {e}")
-            # Return first few chunks as fallback
             return chunks[:min(2, len(chunks))] if chunks else []
 
 class AsyncRateLimiter:
-    def __init__(self, max_requests_per_minute=20):
+    def __init__(self, max_requests_per_minute=15):
         self.max_requests = max_requests_per_minute
         self.requests = []
         self.lock = asyncio.Lock()
@@ -364,58 +322,72 @@ def verify_bearer_token(credentials: HTTPAuthorizationCredentials = Depends(secu
     )
 
 async def extract_pdf_from_url_fast(url: str) -> str:
-    """Robust PDF extraction with better error handling"""
+    """Fixed PDF extraction that handles document lifecycle properly"""
     try:
         print(f"📄 Downloading PDF from: {url[:50]}...")
 
-        # Download with timeout and retries
+        # Download PDF content
         async with httpx.AsyncClient(timeout=60) as client:
-            try:
-                response = await client.get(url, follow_redirects=True)
-                response.raise_for_status()
-            except httpx.TimeoutException:
-                print("⏰ Request timed out, retrying...")
-                await asyncio.sleep(2)
-                response = await client.get(url, follow_redirects=True)
-                response.raise_for_status()
+            response = await client.get(url, follow_redirects=True)
+            response.raise_for_status()
 
-        print(f"📖 Extracting text from PDF ({len(response.content)} bytes)...")
+        pdf_content = response.content
+        print(f"📖 Extracting text from PDF ({len(pdf_content)} bytes)...")
 
-        # Extract text with error handling
+        # FIXED: Save to temporary file first to avoid document closed error
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
+            temp_file.write(pdf_content)
+            temp_file.flush()
+            temp_path = temp_file.name
+
         try:
-            with fitz.open(stream=response.content, filetype="pdf") as doc:
-                if len(doc) == 0:
-                    raise Exception("PDF has no pages")
+            # Open PDF from file path instead of stream
+            doc = fitz.open(temp_path)
 
-                text_pages = []
-                for page_num, page in enumerate(doc):
-                    try:
-                        page_text = page.get_text()
-                        if page_text.strip():  # Only add non-empty pages
-                            text_pages.append(f"[Page {page_num + 1}]\n{page_text}")
-                    except Exception as e:
-                        print(f"⚠️ Error extracting page {page_num + 1}: {e}")
-                        continue
+            if len(doc) == 0:
+                doc.close()
+                os.unlink(temp_path)
+                raise Exception("PDF has no pages")
 
-                if not text_pages:
-                    raise Exception("No text could be extracted from PDF")
+            text_pages = []
+            for page_num in range(len(doc)):
+                try:
+                    page = doc[page_num]
+                    page_text = page.get_text()
+                    if page_text.strip():
+                        text_pages.append(f"[Page {page_num + 1}]\n{page_text}")
+                except Exception as e:
+                    print(f"⚠️ Error extracting page {page_num + 1}: {e}")
+                    continue
 
-                text = "\n".join(text_pages)
+            # Close document properly
+            doc.close()
+
+            # Clean up temp file
+            try:
+                os.unlink(temp_path)
+            except:
+                pass
+
+            if not text_pages:
+                raise Exception("No text could be extracted from PDF")
+
+            text = "\n".join(text_pages)
+            print(f"✅ Extracted {len(text)} characters from {len(text_pages)} pages")
+
+            if len(text.strip()) < 100:
+                print("⚠️ Warning: Very little text extracted from PDF")
+
+            return text
 
         except Exception as e:
-            print(f"❌ PyMuPDF extraction failed: {e}")
-            # Fallback: return error message that can be handled
-            raise HTTPException(status_code=400, detail=f"PDF text extraction failed: {str(e)}")
+            # Clean up temp file on error
+            try:
+                os.unlink(temp_path)
+            except:
+                pass
+            raise e
 
-        print(f"✅ Extracted {len(text)} characters from {len(doc)} pages")
-
-        if len(text.strip()) < 100:
-            print("⚠️ Warning: Very little text extracted from PDF")
-
-        return text
-
-    except HTTPException:
-        raise  # Re-raise HTTP exceptions
     except Exception as e:
         print(f"❌ PDF extraction error: {str(e)}")
         raise HTTPException(status_code=400, detail=f"PDF extraction failed: {str(e)}")
@@ -423,12 +395,11 @@ async def extract_pdf_from_url_fast(url: str) -> str:
 def create_enhanced_prompt(question: str, relevant_chunks: List[Dict]) -> List[Dict]:
     """Create prompt with error handling"""
     try:
-        # Prepare context
         context_parts = []
         for i, chunk in enumerate(relevant_chunks[:3], 1):
             chunk_text = chunk.get("text", "")
             if chunk_text:
-                context_parts.append(f"Context {i}:\n{chunk_text[:800]}\n")  # Limit chunk size
+                context_parts.append(f"Context {i}:\n{chunk_text[:800]}\n")
 
         context = "\n".join(context_parts) if context_parts else "No relevant context found."
 
@@ -454,14 +425,13 @@ Answer:"""
 
     except Exception as e:
         print(f"⚠️ Error creating prompt: {e}")
-        # Fallback prompt
         return [
             {"role": "system", "content": "You are an insurance expert."},
             {"role": "user", "content": f"Answer this insurance question: {question}"}
         ]
 
 async def call_hf_router_enhanced(messages: List[Dict], max_tokens: int = 600) -> str:
-    """Robust API call with better error handling"""
+    """API call with error handling"""
     if not LLM_KEY:
         raise HTTPException(status_code=500, detail="HF_TOKEN environment variable not set")
 
@@ -500,27 +470,20 @@ async def call_hf_router_enhanced(messages: List[Dict], max_tokens: int = 600) -
             print(f"✅ Received response: {len(content)} characters")
             return content
         else:
-            print(f"❌ Unexpected API response: {result}")
             raise HTTPException(status_code=500, detail="Unexpected API response format")
 
-    except requests.exceptions.Timeout:
-        print("❌ API request timed out")
-        raise HTTPException(status_code=500, detail="API request timed out")
-    except requests.exceptions.RequestException as e:
+    except Exception as e:
         print(f"❌ API request failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"API request failed: {str(e)}")
-    except Exception as e:
-        print(f"❌ Unexpected error in API call: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 @app.get("/")
 async def root():
     return {
-        "message": "Insurance Claims Processing API - Robust",
-        "version": "3.2.0",
+        "message": "Insurance Claims Processing API - Fixed",
+        "version": "3.3.0",
         "model": "mistralai/Mistral-7B-Instruct-v0.2:featherless-ai",
         "provider": "Hugging Face Router",
-        "status": "robust",
+        "status": "fixed_pymupdf",
         "hf_token_configured": bool(LLM_KEY)
     }
 
@@ -529,14 +492,14 @@ async def document_qa(
     req: QARequest,
     token: str = Depends(verify_bearer_token)
 ):
-    """Robust Document Q&A with comprehensive error handling"""
+    """Fixed Document Q&A with proper PyMuPDF handling"""
     start_time = time.time()
 
     try:
-        print(f"🚀 Processing {len(req.questions)} questions robustly")
+        print(f"🚀 Processing {len(req.questions)} questions with fixed PDF handling")
         print(f"📄 Documents to process: {len(req.documents)}")
 
-        # Step 1: Extract PDF text with error handling
+        # Step 1: Extract PDF text with fixed handling
         pdf_texts = []
         for i, doc_url in enumerate(req.documents):
             try:
@@ -545,7 +508,6 @@ async def document_qa(
                 pdf_texts.append(text)
             except Exception as e:
                 print(f"❌ Failed to process document {i+1}: {e}")
-                # Continue with other documents
                 continue
 
         if not pdf_texts:
@@ -556,13 +518,9 @@ async def document_qa(
         all_text = "\n".join(pdf_texts)
         document_keywords = doc_analyzer.extract_document_keywords(all_text)
 
-        print(f"📊 Extracted {len(document_keywords)} keywords")
-
         # Step 3: Create chunks
         chunker = EnhancedChunker(chunk_size=1000, overlap=150)
         all_chunks = chunker.smart_chunk_with_context(all_text, document_keywords)
-
-        print(f"📚 Created {len(all_chunks)} chunks")
 
         if not all_chunks:
             raise HTTPException(status_code=400, detail="No text chunks could be created from documents")
@@ -579,40 +537,37 @@ async def document_qa(
             try:
                 print(f"🔍 Processing question {i}/{len(req.questions)}: {question[:50]}...")
 
-                # Retrieve relevant chunks
                 relevant_chunks = retriever.retrieve_relevant_chunks(question, all_chunks, top_k=4)
 
                 if not relevant_chunks:
                     answers.append("No relevant information found in the provided policy documents.")
                     continue
 
-                # Create prompt and get response
                 messages = create_enhanced_prompt(question, relevant_chunks)
                 response = await call_hf_router_enhanced(messages)
                 answers.append(response.strip())
 
-                # Small delay between questions
                 if i < len(req.questions):
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(3)  # Longer delay for stability
 
             except Exception as e:
                 print(f"❌ Error processing question {i}: {str(e)}")
                 answers.append(f"Error processing this question: {str(e)}")
 
         elapsed_time = time.time() - start_time
-        print(f"✅ Robust processing completed in {elapsed_time:.2f} seconds")
+        print(f"✅ Fixed processing completed in {elapsed_time:.2f} seconds")
 
         return {"answers": answers}
 
     except HTTPException:
-        raise  # Re-raise HTTP exceptions
+        raise
     except Exception as e:
         print(f"❌ Unexpected error in document_qa: {str(e)}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 if __name__ == "__main__":
-    print("🚀 Starting Robust Insurance Claims Processing API...")
+    print("🚀 Starting Fixed Insurance Claims Processing API...")
     print(f"🔑 HF Token configured: {bool(LLM_KEY)}")
 
     if not LLM_KEY:
