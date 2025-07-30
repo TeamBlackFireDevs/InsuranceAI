@@ -1,7 +1,7 @@
 """
-InsuranceAI - Improved Gemini Version with Better Retrieval
+InsuranceAI - Comprehensive Version with Multi-Pass Retrieval
 ----
-Enhanced chunk retrieval and keyword matching for better accuracy
+Enhanced with overlapping search, better chunking, and comprehensive information gathering
 """
 
 from fastapi import FastAPI, HTTPException, Depends
@@ -26,9 +26,9 @@ import string
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="Insurance Claims Processing API - Improved Gemini",
-    description="Enhanced insurance claims processing with improved retrieval",
-    version="4.1.0"
+    title="Insurance Claims Processing API - Comprehensive",
+    description="Comprehensive insurance claims processing with multi-pass retrieval",
+    version="5.0.0"
 )
 
 load_dotenv()
@@ -45,179 +45,282 @@ class QARequest(BaseModel):
             return [v]
         return v
 
-class DocumentAnalyzer:
-    """Enhanced document analyzer for insurance policies"""
+class ComprehensiveDocumentAnalyzer:
+    """Comprehensive document analyzer with extensive term mapping"""
 
     def __init__(self):
-        # Expanded insurance terms with variations
-        self.base_insurance_terms = {
-            'coverage', 'premium', 'deductible', 'policy', 'claim', 'benefit',
-            'exclusion', 'waiting', 'grace', 'maternity', 'pre-existing', 'ped',
-            'hospital', 'treatment', 'surgery', 'diagnosis', 'medical',
-            'insured', 'insurer', 'policyholder', 'beneficiary', 'rider',
-            'copay', 'coinsurance', 'network', 'provider', 'emergency',
-            'preventive', 'wellness', 'chronic', 'acute', 'outpatient',
-            'inpatient', 'prescription', 'pharmaceutical', 'therapy',
-            'rehabilitation', 'diagnostic', 'laboratory', 'radiology',
-            'ayush', 'ayurveda', 'homeopathy', 'unani', 'siddha',
-            'cataract', 'donor', 'organ', 'harvesting', 'discount',
-            'ncd', 'room', 'rent', 'icu', 'charges', 'limit', 'period',
-            'days', 'months', 'years', 'continuous', 'renewal', 'break',
-            'floater', 'sum', 'amount', 'payable', 'reimbursed', 'expenses'
+        # Comprehensive insurance terms with variations and synonyms
+        self.insurance_terms = {
+            # Time periods
+            'grace': ['grace', 'grace period', 'grace time'],
+            'waiting': ['waiting', 'waiting period', 'wait period', 'waiting time'],
+            'period': ['period', 'duration', 'time', 'days', 'months', 'years'],
+
+            # Policy terms
+            'premium': ['premium', 'premiums', 'payment', 'installment', 'instalment'],
+            'policy': ['policy', 'policies', 'coverage', 'plan', 'scheme'],
+            'claim': ['claim', 'claims', 'reimbursement', 'indemnity'],
+            'benefit': ['benefit', 'benefits', 'coverage', 'cover'],
+
+            # Medical terms
+            'maternity': ['maternity', 'pregnancy', 'childbirth', 'delivery', 'natal'],
+            'cataract': ['cataract', 'eye', 'vision', 'lens'],
+            'pre-existing': ['pre-existing', 'pre existing', 'ped', 'existing condition'],
+            'organ': ['organ', 'donor', 'transplant', 'harvesting'],
+
+            # Discounts and benefits
+            'ncd': ['ncd', 'no claim discount', 'no-claim discount', 'bonus', 'discount'],
+            'health': ['health', 'medical', 'checkup', 'check-up', 'preventive'],
+
+            # Hospital terms
+            'hospital': ['hospital', 'nursing home', 'healthcare', 'medical facility'],
+            'room': ['room', 'accommodation', 'bed', 'ward'],
+            'icu': ['icu', 'intensive care', 'critical care'],
+
+            # Treatment systems
+            'ayush': ['ayush', 'ayurveda', 'homeopathy', 'unani', 'siddha', 'yoga', 'naturopathy'],
+
+            # Limits and charges
+            'limit': ['limit', 'sub-limit', 'sublimit', 'maximum', 'cap'],
+            'charges': ['charges', 'expenses', 'cost', 'fee', 'amount']
         }
 
-        # Specific question-answer mappings for better retrieval
-        self.question_keywords = {
-            'grace period': ['grace', 'period', 'premium', 'payment', 'days'],
-            'waiting period': ['waiting', 'period', 'pre-existing', 'ped', 'diseases', 'months'],
-            'maternity': ['maternity', 'pregnancy', 'childbirth', 'delivery', 'expenses'],
-            'cataract': ['cataract', 'surgery', 'waiting', 'period', 'eye'],
-            'organ donor': ['organ', 'donor', 'medical', 'expenses', 'covered'],
-            'ncd': ['ncd', 'no', 'claim', 'discount', 'bonus', 'percentage'],
-            'health check': ['health', 'check', 'preventive', 'checkup', 'reimbursed'],
-            'hospital': ['hospital', 'definition', 'qualified', 'beds', 'medical'],
-            'ayush': ['ayush', 'ayurveda', 'homeopathy', 'unani', 'siddha', 'treatment'],
-            'room rent': ['room', 'rent', 'icu', 'charges', 'sub-limit', 'plan']
+        # Question-specific search terms
+        self.question_mappings = {
+            'grace period premium payment': {
+                'primary': ['grace', 'period', 'premium', 'payment', 'renewal', 'due'],
+                'secondary': ['days', 'time', 'break', 'lapse', 'continuation'],
+                'context': ['policy', 'renewal', 'installment', 'due date']
+            },
+            'waiting period pre-existing': {
+                'primary': ['waiting', 'period', 'pre-existing', 'ped', 'diseases'],
+                'secondary': ['months', 'years', 'continuous', 'coverage'],
+                'context': ['condition', 'medical', 'treatment', 'coverage']
+            },
+            'maternity coverage': {
+                'primary': ['maternity', 'pregnancy', 'childbirth', 'delivery'],
+                'secondary': ['waiting', 'period', 'months', 'coverage', 'expenses'],
+                'context': ['female', 'insured', 'benefit', 'limit']
+            },
+            'cataract surgery waiting': {
+                'primary': ['cataract', 'surgery', 'waiting', 'period'],
+                'secondary': ['eye', 'treatment', 'months', 'coverage'],
+                'context': ['medical', 'procedure', 'benefit']
+            },
+            'organ donor coverage': {
+                'primary': ['organ', 'donor', 'medical', 'expenses'],
+                'secondary': ['coverage', 'covered', 'treatment', 'harvesting'],
+                'context': ['insured', 'benefit', 'policy']
+            },
+            'no claim discount': {
+                'primary': ['ncd', 'no claim discount', 'bonus', 'discount'],
+                'secondary': ['percentage', 'premium', 'renewal', 'claim free'],
+                'context': ['policy', 'year', 'base premium']
+            },
+            'health checkup benefit': {
+                'primary': ['health', 'checkup', 'check-up', 'preventive'],
+                'secondary': ['reimbursement', 'benefit', 'expenses', 'coverage'],
+                'context': ['policy', 'year', 'continuous', 'limit']
+            },
+            'hospital definition': {
+                'primary': ['hospital', 'definition', 'nursing home', 'healthcare'],
+                'secondary': ['facility', 'qualified', 'beds', 'medical'],
+                'context': ['practitioner', 'treatment', 'inpatient']
+            },
+            'ayush treatment coverage': {
+                'primary': ['ayush', 'ayurveda', 'homeopathy', 'unani', 'siddha'],
+                'secondary': ['treatment', 'coverage', 'expenses', 'hospital'],
+                'context': ['medical', 'practitioner', 'inpatient', 'limit']
+            },
+            'room rent icu limits': {
+                'primary': ['room', 'rent', 'icu', 'charges', 'sub-limit'],
+                'secondary': ['accommodation', 'intensive care', 'plan', 'limit'],
+                'context': ['expenses', 'coverage', 'benefit', 'table']
+            }
         }
 
-    def extract_document_keywords(self, text: str) -> Dict[str, float]:
-        """Enhanced keyword extraction"""
-        try:
-            if not text or len(text.strip()) < 10:
-                return {'policy': 0.1, 'insurance': 0.1, 'coverage': 0.1}
+class AdvancedChunker:
+    """Advanced chunking with overlapping and context preservation"""
 
-            text_lower = text.lower()
-
-            # Clean text more thoroughly
-            # Remove extra whitespace and normalize
-            text_lower = re.sub(r'\s+', ' ', text_lower)
-
-            # Extract words (including hyphenated terms)
-            words = re.findall(r'\b[a-z](?:[a-z-]*[a-z])?\b', text_lower)
-            words = [word for word in words if len(word) > 2]
-
-            if not words:
-                return {'policy': 0.1, 'insurance': 0.1, 'coverage': 0.1}
-
-            word_freq = Counter(words)
-            total_words = len(words)
-            document_keywords = {}
-
-            # Add base insurance terms with higher weights
-            for term in self.base_insurance_terms:
-                count = text_lower.count(term)
-                if count > 0:
-                    document_keywords[term] = (count / total_words) * 2  # Higher weight
-
-            # Add high-frequency domain-specific terms
-            for word, freq in word_freq.most_common(50):
-                if freq > 2 and len(word) > 3:
-                    # Boost insurance-related terms
-                    weight = 2 if word in self.base_insurance_terms else 1
-                    document_keywords[word] = (freq / total_words) * weight
-
-            print(f"📊 Extracted {len(document_keywords)} keywords")
-            return document_keywords
-
-        except Exception as e:
-            print(f"❌ Error in keyword extraction: {e}")
-            return {'policy': 0.1, 'insurance': 0.1, 'coverage': 0.1}
-
-class EnhancedChunker:
-    """Improved text chunking with better boundary detection"""
-
-    def __init__(self, chunk_size: int = 1000, overlap: int = 200):
+    def __init__(self, chunk_size: int = 800, overlap: int = 300):
         self.chunk_size = chunk_size
         self.overlap = overlap
 
-    def smart_chunk_with_context(self, text: str, document_keywords: Dict[str, float]) -> List[Dict]:
-        """Enhanced chunking with better context preservation"""
+    def create_comprehensive_chunks(self, text: str, document_keywords: Dict[str, float]) -> List[Dict]:
+        """Create overlapping chunks with better context preservation"""
         try:
             if not text or len(text.strip()) < 10:
                 return []
 
             # Clean and normalize text
-            text = re.sub(r'\n+', '\n', text)  # Normalize line breaks
-            text = re.sub(r'\s+', ' ', text)    # Normalize spaces
-
-            if len(text) <= self.chunk_size:
-                return [{
-                    "text": text,
-                    "metadata": {
-                        "chunk_id": 0,
-                        "position": 0,
-                        "keywords": document_keywords,
-                        "length": len(text),
-                        "keyword_density": self._calculate_keyword_density(text, document_keywords)
-                    }
-                }]
+            text = re.sub(r'\n+', '\n', text)
+            text = re.sub(r'\s+', ' ', text)
 
             chunks = []
+
+            # Method 1: Standard overlapping chunks
+            standard_chunks = self._create_standard_chunks(text, document_keywords)
+            chunks.extend(standard_chunks)
+
+            # Method 2: Section-based chunks (look for numbered sections)
+            section_chunks = self._create_section_chunks(text, document_keywords)
+            chunks.extend(section_chunks)
+
+            # Method 3: Keyword-focused chunks
+            keyword_chunks = self._create_keyword_focused_chunks(text, document_keywords)
+            chunks.extend(keyword_chunks)
+
+            # Remove duplicates and sort by position
+            unique_chunks = self._deduplicate_chunks(chunks)
+
+            print(f"📚 Created {len(unique_chunks)} comprehensive chunks")
+            return unique_chunks
+
+        except Exception as e:
+            print(f"❌ Error in comprehensive chunking: {e}")
+            return self._create_fallback_chunks(text, document_keywords)
+
+    def _create_standard_chunks(self, text: str, keywords: Dict[str, float]) -> List[Dict]:
+        """Create standard overlapping chunks"""
+        chunks = []
+        start = 0
+        chunk_id = 0
+
+        while start < len(text):
+            end = min(start + self.chunk_size, len(text))
+
+            # Find good break point
+            if end < len(text):
+                for delimiter in ["\n\n", ". ", "\n", ", ", " "]:
+                    last_pos = text.rfind(delimiter, start + self.chunk_size - 200, end)
+                    if last_pos > start + self.chunk_size // 2:
+                        end = last_pos + len(delimiter)
+                        break
+
+            chunk_text = text[start:end].strip()
+            if chunk_text and len(chunk_text) > 50:
+                chunks.append({
+                    "text": chunk_text,
+                    "metadata": {
+                        "chunk_id": f"std_{chunk_id}",
+                        "type": "standard",
+                        "position": start,
+                        "keywords": keywords,
+                        "length": len(chunk_text),
+                        "keyword_density": self._calculate_keyword_density(chunk_text, keywords)
+                    }
+                })
+                chunk_id += 1
+
+            start = max(end - self.overlap, end)
+            if start >= len(text):
+                break
+
+        return chunks
+
+    def _create_section_chunks(self, text: str, keywords: Dict[str, float]) -> List[Dict]:
+        """Create chunks based on document sections"""
+        chunks = []
+
+        # Look for section patterns
+        section_patterns = [
+            r'\n\s*\d+\.\d+\s+[A-Z][^\n]+',  # 3.1 Section Title
+            r'\n\s*[A-Z][A-Z\s]+\n',            # ALL CAPS HEADERS
+            r'\n\s*\([a-z]\)\s+[A-Z]',         # (a) subsections
+            r'\n\s*[a-z]\.\s+[A-Z]'             # a. subsections
+        ]
+
+        section_starts = []
+        for pattern in section_patterns:
+            matches = re.finditer(pattern, text)
+            for match in matches:
+                section_starts.append(match.start())
+
+        section_starts = sorted(set(section_starts))
+
+        for i, start in enumerate(section_starts):
+            end = section_starts[i + 1] if i + 1 < len(section_starts) else len(text)
+
+            # Extend section to include more context
+            actual_start = max(0, start - 100)
+            actual_end = min(len(text), end + 100)
+
+            section_text = text[actual_start:actual_end].strip()
+
+            if section_text and len(section_text) > 100:
+                chunks.append({
+                    "text": section_text,
+                    "metadata": {
+                        "chunk_id": f"sec_{i}",
+                        "type": "section",
+                        "position": actual_start,
+                        "keywords": keywords,
+                        "length": len(section_text),
+                        "keyword_density": self._calculate_keyword_density(section_text, keywords)
+                    }
+                })
+
+        return chunks
+
+    def _create_keyword_focused_chunks(self, text: str, keywords: Dict[str, float]) -> List[Dict]:
+        """Create chunks focused around important keywords"""
+        chunks = []
+
+        important_terms = [
+            'grace period', 'waiting period', 'maternity', 'cataract', 
+            'pre-existing', 'ncd', 'no claim discount', 'health check',
+            'organ donor', 'ayush', 'room rent', 'icu charges'
+        ]
+
+        for i, term in enumerate(important_terms):
+            # Find all occurrences of the term
+            term_positions = []
             start = 0
-            chunk_id = 0
+            while True:
+                pos = text.lower().find(term.lower(), start)
+                if pos == -1:
+                    break
+                term_positions.append(pos)
+                start = pos + 1
 
-            while start < len(text):
-                end = min(start + self.chunk_size, len(text))
+            # Create chunks around each occurrence
+            for j, pos in enumerate(term_positions):
+                chunk_start = max(0, pos - 400)
+                chunk_end = min(len(text), pos + 600)
 
-                # Better boundary detection
-                if end < len(text):
-                    # Look for natural breaks in order of preference
-                    break_points = [
-                        (r'\n\n', 2),      # Paragraph breaks
-                        (r'\. [A-Z]', 2),   # Sentence endings
-                        (r'\n', 1),         # Line breaks
-                        (r', ', 2),          # Comma breaks
-                        (r' ', 1)            # Word breaks
-                    ]
+                chunk_text = text[chunk_start:chunk_end].strip()
 
-                    best_break = end
-                    for pattern, offset in break_points:
-                        matches = list(re.finditer(pattern, text[start + self.chunk_size - 300:end]))
-                        if matches:
-                            last_match = matches[-1]
-                            break_pos = start + self.chunk_size - 300 + last_match.end()
-                            if break_pos > start + self.chunk_size // 2:
-                                best_break = break_pos
-                                break
-
-                    end = best_break
-
-                chunk_text = text[start:end].strip()
-                if chunk_text and len(chunk_text) > 20:  # Minimum meaningful chunk size
-                    keyword_density = self._calculate_keyword_density(chunk_text, document_keywords)
-
+                if chunk_text and len(chunk_text) > 100:
                     chunks.append({
                         "text": chunk_text,
                         "metadata": {
-                            "chunk_id": chunk_id,
-                            "position": start,
-                            "keywords": document_keywords,
+                            "chunk_id": f"kw_{i}_{j}",
+                            "type": "keyword_focused",
+                            "position": chunk_start,
+                            "keywords": keywords,
                             "length": len(chunk_text),
-                            "keyword_density": keyword_density
+                            "keyword_density": self._calculate_keyword_density(chunk_text, keywords),
+                            "focus_term": term
                         }
                     })
-                    chunk_id += 1
 
-                # Move start position with overlap
-                start = max(end - self.overlap, end)
-                if start >= len(text):
-                    break
+        return chunks
 
-            print(f"📚 Created {len(chunks)} enhanced chunks")
-            return chunks
+    def _deduplicate_chunks(self, chunks: List[Dict]) -> List[Dict]:
+        """Remove duplicate chunks based on text similarity"""
+        unique_chunks = []
+        seen_texts = set()
 
-        except Exception as e:
-            print(f"❌ Error in chunking: {e}")
-            return [{
-                "text": text[:self.chunk_size] if text else "",
-                "metadata": {
-                    "chunk_id": 0,
-                    "position": 0,
-                    "keywords": document_keywords,
-                    "length": len(text) if text else 0,
-                    "keyword_density": 0
-                }
-            }]
+        for chunk in chunks:
+            text = chunk["text"]
+            # Create a signature for the chunk
+            signature = text[:100] + text[-100:] if len(text) > 200 else text
+
+            if signature not in seen_texts:
+                seen_texts.add(signature)
+                unique_chunks.append(chunk)
+
+        return sorted(unique_chunks, key=lambda x: x["metadata"]["position"])
 
     def _calculate_keyword_density(self, text: str, keywords: Dict[str, float]) -> float:
         """Calculate keyword density for a chunk"""
@@ -234,234 +337,244 @@ class EnhancedChunker:
 
         return total_score / len(text.split()) if text.split() else 0.0
 
-class ImprovedQuestionAnalyzer:
-    """Enhanced question analyzer with better pattern matching"""
+    def _create_fallback_chunks(self, text: str, keywords: Dict[str, float]) -> List[Dict]:
+        """Fallback chunking method"""
+        return [{
+            "text": text[:self.chunk_size],
+            "metadata": {
+                "chunk_id": "fallback_0",
+                "type": "fallback",
+                "position": 0,
+                "keywords": keywords,
+                "length": len(text[:self.chunk_size]),
+                "keyword_density": 0
+            }
+        }]
+
+class MultiPassRetriever:
+    """Multi-pass retrieval system for comprehensive information gathering"""
 
     def __init__(self):
-        self.question_patterns = {
-            'grace_period': {
-                'keywords': ['grace', 'period', 'premium', 'payment'],
-                'patterns': [r'grace\s+period', r'premium\s+payment', r'grace\s+time']
-            },
-            'waiting_period': {
-                'keywords': ['waiting', 'period', 'pre-existing', 'ped', 'diseases'],
-                'patterns': [r'waiting\s+period', r'pre-existing', r'ped']
-            },
-            'maternity': {
-                'keywords': ['maternity', 'pregnancy', 'childbirth', 'delivery'],
-                'patterns': [r'maternity', r'pregnancy', r'childbirth']
-            },
-            'cataract': {
-                'keywords': ['cataract', 'surgery', 'eye', 'waiting'],
-                'patterns': [r'cataract', r'eye\s+surgery']
-            },
-            'organ_donor': {
-                'keywords': ['organ', 'donor', 'medical', 'expenses'],
-                'patterns': [r'organ\s+donor', r'donor\s+expenses']
-            },
-            'ncd': {
-                'keywords': ['ncd', 'no', 'claim', 'discount', 'bonus'],
-                'patterns': [r'no\s+claim\s+discount', r'ncd', r'claim\s+bonus']
-            },
-            'health_checkup': {
-                'keywords': ['health', 'check', 'preventive', 'checkup'],
-                'patterns': [r'health\s+check', r'preventive', r'checkup']
-            },
-            'hospital_definition': {
-                'keywords': ['hospital', 'definition', 'define', 'qualified'],
-                'patterns': [r'define.*hospital', r'hospital.*definition']
-            },
-            'ayush': {
-                'keywords': ['ayush', 'ayurveda', 'homeopathy', 'unani', 'siddha'],
-                'patterns': [r'ayush', r'ayurveda', r'homeopathy']
-            },
-            'room_rent': {
-                'keywords': ['room', 'rent', 'icu', 'charges', 'sub-limit'],
-                'patterns': [r'room\s+rent', r'icu\s+charges', r'sub-limit']
-            }
-        }
+        self.analyzer = ComprehensiveDocumentAnalyzer()
 
-    def analyze_question(self, question: str) -> Dict[str, any]:
-        """Enhanced question analysis"""
-        try:
-            if not question:
-                return {'types': [], 'key_terms': [], 'insurance_terms': [], 'complexity': 0, 'question_type': None}
-
-            question_lower = question.lower()
-
-            # Detect specific question type
-            question_type = None
-            max_score = 0
-
-            for q_type, config in self.question_patterns.items():
-                score = 0
-
-                # Check keywords
-                for keyword in config['keywords']:
-                    if keyword in question_lower:
-                        score += 1
-
-                # Check patterns
-                for pattern in config['patterns']:
-                    if re.search(pattern, question_lower):
-                        score += 2
-
-                if score > max_score:
-                    max_score = score
-                    question_type = q_type
-
-            # Extract key terms
-            words = re.findall(r'\b[a-z]{3,}\b', question_lower)
-            stop_words = {'what', 'how', 'when', 'where', 'why', 'the', 'and', 'for', 'with', 'are', 'does', 'this'}
-            key_terms = [word for word in words if word not in stop_words]
-
-            # Insurance-specific terms
-            insurance_keywords = [
-                'grace', 'waiting', 'maternity', 'cataract', 'premium', 'claim', 
-                'coverage', 'ncd', 'discount', 'donor', 'organ', 'ayush', 'hospital',
-                'room', 'rent', 'icu', 'preventive', 'health', 'check'
-            ]
-            insurance_terms = [term for term in insurance_keywords if term in question_lower]
-
-            return {
-                'types': [question_type] if question_type else [],
-                'key_terms': key_terms[:15],
-                'insurance_terms': insurance_terms,
-                'complexity': len(key_terms) + len(insurance_terms),
-                'question_type': question_type,
-                'confidence': max_score
-            }
-
-        except Exception as e:
-            print(f"⚠️ Error analyzing question: {e}")
-            return {'types': [], 'key_terms': [], 'insurance_terms': [], 'complexity': 0, 'question_type': None}
-
-class ImprovedRetriever:
-    """Enhanced chunk retrieval with better scoring"""
-
-    def __init__(self):
-        self.analyzer = ImprovedQuestionAnalyzer()
-
-    def calculate_relevance_score(self, question: str, chunk: Dict, question_analysis: Dict) -> float:
-        """Enhanced relevance scoring"""
-        try:
-            chunk_text = chunk.get("text", "").lower()
-            if not chunk_text:
-                return 0.0
-
-            score = 0.0
-            question_lower = question.lower()
-
-            # Base keyword matching (improved)
-            for term in question_analysis.get("key_terms", []):
-                if term in chunk_text:
-                    # Exact word boundary matching
-                    if re.search(r'\b' + re.escape(term) + r'\b', chunk_text):
-                        score += 0.4
-                    else:
-                        score += 0.2
-
-            # Insurance terms (higher weight)
-            for term in question_analysis.get("insurance_terms", []):
-                if term in chunk_text:
-                    if re.search(r'\b' + re.escape(term) + r'\b', chunk_text):
-                        score += 0.6
-                    else:
-                        score += 0.3
-
-            # Question type specific scoring
-            question_type = question_analysis.get("question_type")
-            if question_type:
-                type_patterns = self.analyzer.question_patterns.get(question_type, {})
-
-                # Check for specific patterns in chunk
-                for pattern in type_patterns.get('patterns', []):
-                    if re.search(pattern, chunk_text):
-                        score += 0.8
-
-                # Check for type-specific keywords
-                for keyword in type_patterns.get('keywords', []):
-                    if re.search(r'\b' + re.escape(keyword) + r'\b', chunk_text):
-                        score += 0.5
-
-            # Phrase matching (exact phrases from question)
-            question_phrases = self._extract_phrases(question_lower)
-            for phrase in question_phrases:
-                if phrase in chunk_text:
-                    score += 0.7
-
-            # Keyword density bonus
-            keyword_density = chunk.get("metadata", {}).get("keyword_density", 0)
-            score += keyword_density * 0.1
-
-            # Penalize very short chunks
-            chunk_length = len(chunk_text.split())
-            if chunk_length < 20:
-                score *= 0.5
-
-            return min(score, 2.0)  # Cap at 2.0
-
-        except Exception as e:
-            print(f"⚠️ Error calculating relevance score: {e}")
-            return 0.1
-
-    def _extract_phrases(self, text: str) -> List[str]:
-        """Extract meaningful phrases from text"""
-        phrases = []
-
-        # Extract 2-3 word phrases
-        words = text.split()
-        for i in range(len(words) - 1):
-            if len(words[i]) > 2 and len(words[i+1]) > 2:
-                phrases.append(f"{words[i]} {words[i+1]}")
-
-        for i in range(len(words) - 2):
-            if all(len(word) > 2 for word in words[i:i+3]):
-                phrases.append(f"{words[i]} {words[i+1]} {words[i+2]}")
-
-        return phrases
-
-    def retrieve_relevant_chunks(self, question: str, chunks: List[Dict], top_k: int = 5) -> List[Dict]:
-        """Enhanced chunk retrieval"""
+    def retrieve_comprehensive_chunks(self, question: str, chunks: List[Dict], top_k: int = 8) -> List[Dict]:
+        """Multi-pass retrieval for comprehensive coverage"""
         try:
             if not chunks:
                 return []
 
-            question_analysis = self.analyzer.analyze_question(question)
-            print(f"🔍 Question type detected: {question_analysis.get('question_type', 'unknown')}")
-            print(f"🔍 Key terms: {question_analysis.get('key_terms', [])[:5]}")
+            print(f"🔍 Starting multi-pass retrieval for: {question[:50]}...")
 
-            scored_chunks = []
-            for chunk in chunks:
-                try:
-                    score = self.calculate_relevance_score(question, chunk, question_analysis)
-                    if score > 0.1:  # Lower threshold
-                        scored_chunks.append((score, chunk))
-                except Exception as e:
-                    print(f"⚠️ Error scoring chunk: {e}")
-                    continue
+            # Pass 1: Direct keyword matching
+            pass1_chunks = self._pass1_direct_matching(question, chunks)
+            print(f"🎯 Pass 1 (Direct): {len(pass1_chunks)} chunks")
 
-            # Sort by score
-            scored_chunks.sort(reverse=True, key=lambda x: x[0])
+            # Pass 2: Semantic similarity
+            pass2_chunks = self._pass2_semantic_matching(question, chunks)
+            print(f"🎯 Pass 2 (Semantic): {len(pass2_chunks)} chunks")
 
-            # Debug: Print top scores
-            print(f"🎯 Top chunk scores: {[f'{score:.2f}' for score, _ in scored_chunks[:5]]}")
+            # Pass 3: Context expansion
+            pass3_chunks = self._pass3_context_expansion(question, chunks, pass1_chunks + pass2_chunks)
+            print(f"🎯 Pass 3 (Context): {len(pass3_chunks)} chunks")
 
-            result = [chunk for _, chunk in scored_chunks[:top_k]]
+            # Combine and rank all chunks
+            all_candidate_chunks = pass1_chunks + pass2_chunks + pass3_chunks
 
-            # If no good chunks found, return top chunks anyway
-            if not result and chunks:
-                result = chunks[:min(3, len(chunks))]
-                print("⚠️ Using fallback chunks")
+            # Remove duplicates and rank
+            final_chunks = self._rank_and_deduplicate(question, all_candidate_chunks, top_k)
 
-            return result
+            print(f"✅ Final selection: {len(final_chunks)} chunks")
+            return final_chunks
 
         except Exception as e:
-            print(f"❌ Error in chunk retrieval: {e}")
-            return chunks[:min(3, len(chunks))] if chunks else []
+            print(f"❌ Error in multi-pass retrieval: {e}")
+            return chunks[:min(3, len(chunks))]
+
+    def _pass1_direct_matching(self, question: str, chunks: List[Dict]) -> List[Dict]:
+        """Pass 1: Direct keyword and phrase matching"""
+        scored_chunks = []
+        question_lower = question.lower()
+
+        # Extract key phrases from question
+        key_phrases = self._extract_key_phrases(question_lower)
+
+        for chunk in chunks:
+            chunk_text = chunk.get("text", "").lower()
+            score = 0.0
+
+            # Direct phrase matching (highest weight)
+            for phrase in key_phrases:
+                if phrase in chunk_text:
+                    score += 2.0
+
+            # Individual word matching
+            question_words = question_lower.split()
+            for word in question_words:
+                if len(word) > 3 and word in chunk_text:
+                    score += 0.5
+
+            # Insurance term matching
+            insurance_terms = ['grace', 'waiting', 'period', 'maternity', 'cataract', 'ncd', 'discount', 'health', 'checkup', 'ayush', 'room', 'rent', 'icu', 'organ', 'donor']
+            for term in insurance_terms:
+                if term in question_lower and term in chunk_text:
+                    score += 1.0
+
+            if score > 0.5:
+                scored_chunks.append((score, chunk))
+
+        # Sort by score and return top chunks
+        scored_chunks.sort(reverse=True, key=lambda x: x[0])
+        return [chunk for _, chunk in scored_chunks[:5]]
+
+    def _pass2_semantic_matching(self, question: str, chunks: List[Dict]) -> List[Dict]:
+        """Pass 2: Semantic similarity matching"""
+        scored_chunks = []
+        question_lower = question.lower()
+
+        # Define semantic groups
+        semantic_groups = {
+            'time_periods': ['grace', 'waiting', 'period', 'days', 'months', 'years', 'duration'],
+            'medical_coverage': ['maternity', 'cataract', 'surgery', 'treatment', 'medical', 'expenses'],
+            'policy_benefits': ['coverage', 'benefit', 'covered', 'indemnify', 'reimbursement'],
+            'discounts': ['ncd', 'discount', 'bonus', 'claim', 'free'],
+            'facilities': ['hospital', 'room', 'icu', 'charges', 'ayush']
+        }
+
+        # Identify question's semantic group
+        question_groups = []
+        for group, terms in semantic_groups.items():
+            if any(term in question_lower for term in terms):
+                question_groups.append(group)
+
+        for chunk in chunks:
+            chunk_text = chunk.get("text", "").lower()
+            score = 0.0
+
+            # Semantic group matching
+            for group in question_groups:
+                group_terms = semantic_groups[group]
+                matches = sum(1 for term in group_terms if term in chunk_text)
+                score += matches * 0.3
+
+            # Context relevance
+            if any(context in chunk_text for context in ['policy', 'insured', 'coverage', 'benefit']):
+                score += 0.2
+
+            if score > 0.3:
+                scored_chunks.append((score, chunk))
+
+        scored_chunks.sort(reverse=True, key=lambda x: x[0])
+        return [chunk for _, chunk in scored_chunks[:4]]
+
+    def _pass3_context_expansion(self, question: str, all_chunks: List[Dict], selected_chunks: List[Dict]) -> List[Dict]:
+        """Pass 3: Expand context around selected chunks"""
+        if not selected_chunks:
+            return []
+
+        expanded_chunks = []
+        selected_positions = {chunk["metadata"]["position"] for chunk in selected_chunks}
+
+        # Find chunks adjacent to selected ones
+        for chunk in all_chunks:
+            chunk_pos = chunk["metadata"]["position"]
+
+            # Check if this chunk is adjacent to any selected chunk
+            for selected_pos in selected_positions:
+                distance = abs(chunk_pos - selected_pos)
+                if 100 < distance < 2000:  # Adjacent but not overlapping
+                    expanded_chunks.append(chunk)
+                    break
+
+        return expanded_chunks[:3]
+
+    def _extract_key_phrases(self, text: str) -> List[str]:
+        """Extract key phrases from question"""
+        phrases = []
+
+        # Common insurance phrases
+        insurance_phrases = [
+            'grace period', 'waiting period', 'pre-existing diseases',
+            'maternity expenses', 'cataract surgery', 'organ donor',
+            'no claim discount', 'health check', 'room rent', 'icu charges',
+            'ayush treatment', 'preventive health'
+        ]
+
+        for phrase in insurance_phrases:
+            if phrase in text:
+                phrases.append(phrase)
+
+        # Extract 2-3 word combinations
+        words = text.split()
+        for i in range(len(words) - 1):
+            if len(words[i]) > 3 and len(words[i+1]) > 3:
+                phrases.append(f"{words[i]} {words[i+1]}")
+
+        return phrases
+
+    def _rank_and_deduplicate(self, question: str, chunks: List[Dict], top_k: int) -> List[Dict]:
+        """Final ranking and deduplication"""
+        if not chunks:
+            return []
+
+        # Remove duplicates based on text similarity
+        unique_chunks = []
+        seen_signatures = set()
+
+        for chunk in chunks:
+            text = chunk.get("text", "")
+            signature = text[:50] + text[-50:] if len(text) > 100 else text
+
+            if signature not in seen_signatures:
+                seen_signatures.add(signature)
+                unique_chunks.append(chunk)
+
+        # Final scoring
+        final_scored = []
+        question_lower = question.lower()
+
+        for chunk in unique_chunks:
+            chunk_text = chunk.get("text", "").lower()
+
+            # Comprehensive scoring
+            score = 0.0
+
+            # Question word overlap
+            question_words = set(question_lower.split())
+            chunk_words = set(chunk_text.split())
+            overlap = len(question_words & chunk_words)
+            score += overlap * 0.1
+
+            # Key phrase matching
+            key_phrases = self._extract_key_phrases(question_lower)
+            for phrase in key_phrases:
+                if phrase in chunk_text:
+                    score += 1.0
+
+            # Chunk type bonus
+            chunk_type = chunk.get("metadata", {}).get("type", "")
+            if chunk_type == "keyword_focused":
+                score += 0.5
+            elif chunk_type == "section":
+                score += 0.3
+
+            # Length penalty for very short chunks
+            chunk_length = len(chunk_text.split())
+            if chunk_length < 30:
+                score *= 0.7
+
+            final_scored.append((score, chunk))
+
+        # Sort and return top chunks
+        final_scored.sort(reverse=True, key=lambda x: x[0])
+
+        # Debug output
+        top_scores = [f"{score:.2f}" for score, _ in final_scored[:5]]
+        print(f"🎯 Final chunk scores: {top_scores}")
+
+        return [chunk for _, chunk in final_scored[:top_k]]
 
 class AsyncRateLimiter:
-    def __init__(self, max_requests_per_minute=25):
+    def __init__(self, max_requests_per_minute=20):
         self.max_requests = max_requests_per_minute
         self.requests = []
         self.lock = asyncio.Lock()
@@ -561,19 +674,23 @@ async def extract_pdf_from_url_fast(url: str) -> str:
         print(f"❌ PDF extraction error: {str(e)}")
         raise HTTPException(status_code=400, detail=f"PDF extraction failed: {str(e)}")
 
-def create_enhanced_prompt(question: str, relevant_chunks: List[Dict]) -> str:
-    """Enhanced prompt creation"""
+def create_comprehensive_prompt(question: str, relevant_chunks: List[Dict]) -> str:
+    """Create comprehensive prompt with all relevant context"""
     try:
         context_parts = []
-        for i, chunk in enumerate(relevant_chunks[:4], 1):  # Use top 4 chunks
+
+        # Include more chunks with better organization
+        for i, chunk in enumerate(relevant_chunks[:6], 1):  # Use top 6 chunks
             chunk_text = chunk.get("text", "")
+            chunk_type = chunk.get("metadata", {}).get("type", "standard")
+
             if chunk_text:
-                # Include more context per chunk
-                context_parts.append(f"Context {i}:\n{chunk_text[:1000]}\n")
+                # Include more text per chunk for better context
+                context_parts.append(f"Context {i} ({chunk_type}):\n{chunk_text[:1200]}\n")
 
         context = "\n".join(context_parts) if context_parts else "No relevant context found."
 
-        prompt = f"""You are an expert insurance policy analyst. Answer the question based ONLY on the provided policy context.
+        prompt = f"""You are an expert insurance policy analyst. Answer the question based STRICTLY on the provided policy context.
 
 Question: {question}
 
@@ -581,18 +698,19 @@ Policy Context:
 {context}
 
 Instructions:
-1. Answer based STRICTLY on the provided context above
-2. If the context contains the answer, provide specific details and quote relevant sections
-3. If the context doesn't contain sufficient information, say: "The provided policy context does not contain sufficient information to answer this question."
-4. Be precise and include specific terms, periods, amounts, or conditions mentioned in the policy
-5. Do not make assumptions or add information not present in the context
+1. Answer based ONLY on the information provided in the context above
+2. If the context contains specific details (numbers, periods, percentages, conditions), include them in your answer
+3. Quote relevant sections when possible
+4. If the context doesn't contain complete information, state what information is available and what is missing
+5. Be precise and comprehensive - include all relevant details found in the context
+6. Do not make assumptions or add information not present in the context
 
 Answer:"""
 
         return prompt
 
     except Exception as e:
-        print(f"⚠️ Error creating prompt: {e}")
+        print(f"⚠️ Error creating comprehensive prompt: {e}")
         return f"Answer this insurance question based on the policy context: {question}"
 
 async def call_gemini_api(prompt: str) -> str:
@@ -619,9 +737,9 @@ async def call_gemini_api(prompt: str) -> str:
             }
         ],
         "generationConfig": {
-            "temperature": 0.1,
+            "temperature": 0.05,  # Lower temperature for more precise answers
             "topP": 0.8,
-            "maxOutputTokens": 1000
+            "maxOutputTokens": 1200
         }
     }
 
@@ -633,7 +751,7 @@ async def call_gemini_api(prompt: str) -> str:
 
             if response.status_code == 429:
                 print("⏰ Rate limited, waiting...")
-                await asyncio.sleep(20)
+                await asyncio.sleep(25)
                 response = await client.post(API_URL, headers=headers, json=payload)
 
             response.raise_for_status()
@@ -654,11 +772,11 @@ async def call_gemini_api(prompt: str) -> str:
 @app.get("/")
 async def root():
     return {
-        "message": "Insurance Claims Processing API - Improved Gemini",
-        "version": "4.1.0",
+        "message": "Insurance Claims Processing API - Comprehensive",
+        "version": "5.0.0",
         "model": "gemini-2.0-flash",
         "provider": "Google Gemini API",
-        "status": "improved_retrieval",
+        "status": "comprehensive_multipass",
         "gemini_api_key_configured": bool(GEMINI_API_KEY)
     }
 
@@ -667,11 +785,11 @@ async def document_qa(
     req: QARequest,
     token: str = Depends(verify_bearer_token)
 ):
-    """Improved Document Q&A with enhanced retrieval"""
+    """Comprehensive Document Q&A with multi-pass retrieval"""
     start_time = time.time()
 
     try:
-        print(f"🚀 Processing {len(req.questions)} questions with improved retrieval")
+        print(f"🚀 Processing {len(req.questions)} questions with comprehensive multi-pass retrieval")
         print(f"📄 Documents to process: {len(req.documents)}")
 
         # Step 1: Extract PDF text
@@ -688,14 +806,23 @@ async def document_qa(
         if not pdf_texts:
             raise HTTPException(status_code=400, detail="No documents could be processed successfully")
 
-        # Step 2: Enhanced document analysis
-        doc_analyzer = DocumentAnalyzer()
+        # Step 2: Comprehensive document analysis
+        doc_analyzer = ComprehensiveDocumentAnalyzer()
         all_text = "\n".join(pdf_texts)
-        document_keywords = doc_analyzer.extract_document_keywords(all_text)
 
-        # Step 3: Enhanced chunking
-        chunker = EnhancedChunker(chunk_size=1000, overlap=200)
-        all_chunks = chunker.smart_chunk_with_context(all_text, document_keywords)
+        # Extract comprehensive keywords
+        document_keywords = {}
+        for term_group, variations in doc_analyzer.insurance_terms.items():
+            for variation in variations:
+                if variation in all_text.lower():
+                    count = all_text.lower().count(variation)
+                    document_keywords[variation] = count / len(all_text.split())
+
+        print(f"📊 Extracted {len(document_keywords)} comprehensive keywords")
+
+        # Step 3: Advanced chunking
+        chunker = AdvancedChunker(chunk_size=800, overlap=300)
+        all_chunks = chunker.create_comprehensive_chunks(all_text, document_keywords)
 
         if not all_chunks:
             raise HTTPException(status_code=400, detail="No text chunks could be created from documents")
@@ -704,33 +831,36 @@ async def document_qa(
         del pdf_texts, all_text
         gc.collect()
 
-        # Step 4: Process questions with improved retrieval
-        retriever = ImprovedRetriever()
+        # Step 4: Process questions with multi-pass retrieval
+        retriever = MultiPassRetriever()
         answers = []
 
         for i, question in enumerate(req.questions, 1):
             try:
-                print(f"🔍 Processing question {i}/{len(req.questions)}: {question[:50]}...")
+                print(f"\n🔍 Processing question {i}/{len(req.questions)}: {question[:60]}...")
 
-                relevant_chunks = retriever.retrieve_relevant_chunks(question, all_chunks, top_k=5)
+                # Multi-pass retrieval
+                relevant_chunks = retriever.retrieve_comprehensive_chunks(question, all_chunks, top_k=8)
 
                 if not relevant_chunks:
                     answers.append("No relevant information found in the provided policy documents.")
                     continue
 
-                prompt = create_enhanced_prompt(question, relevant_chunks)
+                # Create comprehensive prompt
+                prompt = create_comprehensive_prompt(question, relevant_chunks)
                 response = await call_gemini_api(prompt)
                 answers.append(response.strip())
 
+                # Longer delay for stability
                 if i < len(req.questions):
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(3)
 
             except Exception as e:
                 print(f"❌ Error processing question {i}: {str(e)}")
                 answers.append(f"Error processing this question: {str(e)}")
 
         elapsed_time = time.time() - start_time
-        print(f"✅ Improved processing completed in {elapsed_time:.2f} seconds")
+        print(f"\n✅ Comprehensive processing completed in {elapsed_time:.2f} seconds")
 
         return {"answers": answers}
 
@@ -742,7 +872,7 @@ async def document_qa(
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 if __name__ == "__main__":
-    print("🚀 Starting Improved Gemini Insurance Claims Processing API...")
+    print("🚀 Starting Comprehensive Insurance Claims Processing API...")
     print(f"🔑 Gemini API Key configured: {bool(GEMINI_API_KEY)}")
 
     if not GEMINI_API_KEY:
