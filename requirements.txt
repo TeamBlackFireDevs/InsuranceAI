@@ -1,3 +1,4 @@
+--only-binary=:all:
 setuptools
 fastapi==0.103.1
 uvicorn[standard]==0.29.0
