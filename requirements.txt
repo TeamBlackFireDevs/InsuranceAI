@@ -1,3 +1,5 @@
+setuptools
+setuptools-distutils
 fastapi==0.103.1
 uvicorn[standard]==0.29.0
 pydantic==2.3.0
