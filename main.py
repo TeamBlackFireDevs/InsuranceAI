@@ -7,9 +7,8 @@ from flask import Flask, request, jsonify
 import PyPDF2
 import io
 import re
-from sentence_transformers import SentenceTransformer
 import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
+from collections import Counter
 import logging
 
 # Configure logging
@@ -20,14 +19,6 @@ app = Flask(__name__)
 
 # Gemini API configuration
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-
-# Initialize sentence transformer model
-try:
-    embedder = SentenceTransformer('all-MiniLM-L6-v2')
-    logger.info("Sentence transformer model loaded successfully")
-except Exception as e:
-    logger.error(f"Failed to load sentence transformer: {e}")
-    embedder = None
 
 # Training data for insurance domain
 TRAINING_PATTERNS = {
@@ -183,66 +174,117 @@ def smart_chunk_text(text, chunk_size=800, overlap=200):
     
     return [chunk for chunk in chunks if len(chunk.strip()) > 50]
 
-def enhanced_similarity_search(query, chunks, top_k=5):
-    """Enhanced similarity search with multiple scoring methods"""
-    if not embedder or not chunks:
+def calculate_keyword_similarity(query, text):
+    """Calculate similarity based on keyword matching"""
+    query_words = set(re.findall(r'\b\w+\b', query.lower()))
+    text_words = set(re.findall(r'\b\w+\b', text.lower()))
+    
+    if not query_words:
+        return 0.0
+    
+    # Exact word matches
+    exact_matches = len(query_words.intersection(text_words))
+    exact_score = exact_matches / len(query_words)
+    
+    # Partial matches (substring matching)
+    partial_matches = 0
+    for q_word in query_words:
+        for t_word in text_words:
+            if len(q_word) > 3 and (q_word in t_word or t_word in q_word):
+                partial_matches += 0.5
+                break
+    
+    partial_score = min(partial_matches / len(query_words), 0.5)
+    
+    return exact_score + partial_score
+
+def calculate_phrase_similarity(query, text):
+    """Calculate similarity based on phrase matching"""
+    query_lower = query.lower()
+    text_lower = text.lower()
+    
+    # Extract phrases (2-4 words)
+    query_phrases = []
+    text_phrases = []
+    
+    query_words = query_lower.split()
+    text_words = text_lower.split()
+    
+    # Generate 2-3 word phrases
+    for i in range(len(query_words) - 1):
+        query_phrases.append(' '.join(query_words[i:i+2]))
+        if i < len(query_words) - 2:
+            query_phrases.append(' '.join(query_words[i:i+3]))
+    
+    for i in range(len(text_words) - 1):
+        text_phrases.append(' '.join(text_words[i:i+2]))
+        if i < len(text_words) - 2:
+            text_phrases.append(' '.join(text_words[i:i+3]))
+    
+    if not query_phrases:
+        return 0.0
+    
+    matches = 0
+    for q_phrase in query_phrases:
+        if any(q_phrase in t_phrase or t_phrase in q_phrase for t_phrase in text_phrases):
+            matches += 1
+    
+    return matches / len(query_phrases)
+
+def enhanced_keyword_search(query, chunks, top_k=5):
+    """Enhanced keyword-based search with multiple scoring methods"""
+    if not chunks:
         return []
     
     try:
-        # Get embeddings
-        query_embedding = embedder.encode([query])
-        chunk_embeddings = embedder.encode(chunks)
-        
-        # Cosine similarity
-        similarities = cosine_similarity(query_embedding, chunk_embeddings)[0]
-        
-        # Keyword matching boost
-        query_words = set(query.lower().split())
-        keyword_scores = []
+        scored_chunks = []
         
         for chunk in chunks:
-            chunk_words = set(chunk.lower().split())
-            keyword_overlap = len(query_words.intersection(chunk_words))
-            keyword_score = keyword_overlap / len(query_words) if query_words else 0
-            keyword_scores.append(keyword_score)
-        
-        # Insurance domain boost
-        domain_scores = []
-        for chunk in chunks:
-            chunk_lower = chunk.lower()
+            # Keyword similarity
+            keyword_score = calculate_keyword_similarity(query, chunk)
+            
+            # Phrase similarity
+            phrase_score = calculate_phrase_similarity(query, chunk)
+            
+            # Insurance domain boost
             domain_score = 0
+            chunk_lower = chunk.lower()
             for category, terms in TRAINING_PATTERNS.items():
                 for term in terms:
                     if term.lower() in chunk_lower:
                         domain_score += 0.1
-            domain_scores.append(min(domain_score, 1.0))
-        
-        # Combined scoring
-        combined_scores = []
-        for i in range(len(chunks)):
+            domain_score = min(domain_score, 1.0)
+            
+            # Position boost (earlier chunks might be more important)
+            position_score = 1.0 / (chunks.index(chunk) + 1) * 0.1
+            
+            # Length normalization (prefer chunks with reasonable length)
+            length_score = min(len(chunk) / 1000, 1.0) * 0.1
+            
+            # Combined scoring
             combined_score = (
-                similarities[i] * 0.6 +
-                keyword_scores[i] * 0.3 +
-                domain_scores[i] * 0.1
+                keyword_score * 0.4 +
+                phrase_score * 0.3 +
+                domain_score * 0.2 +
+                position_score * 0.05 +
+                length_score * 0.05
             )
-            combined_scores.append(combined_score)
+            
+            scored_chunks.append({
+                'text': chunk,
+                'score': combined_score,
+                'keyword_score': keyword_score,
+                'phrase_score': phrase_score,
+                'domain_score': domain_score
+            })
         
-        # Get top chunks
-        top_indices = np.argsort(combined_scores)[-top_k:][::-1]
+        # Sort by score and return top k
+        scored_chunks.sort(key=lambda x: x['score'], reverse=True)
         
-        return [
-            {
-                'text': chunks[i],
-                'score': combined_scores[i],
-                'similarity': similarities[i],
-                'keyword_score': keyword_scores[i],
-                'domain_score': domain_scores[i]
-            }
-            for i in top_indices if combined_scores[i] > 0.1
-        ]
+        return [chunk for chunk in scored_chunks[:top_k] if chunk['score'] > 0.1]
         
     except Exception as e:
-        logger.error(f"Error in similarity search: {e}")
+        logger.error(f"Error in keyword search: {e}")
         return []
 
 def enhance_query_with_training(query):
@@ -309,8 +351,8 @@ def process_single_query(query, all_chunks):
         # Enhance query
         enhanced_query = enhance_query_with_training(query)
         
-        # Get relevant chunks
-        relevant_chunks = enhanced_similarity_search(enhanced_query, all_chunks, top_k=5)
+        # Get relevant chunks using keyword search
+        relevant_chunks = enhanced_keyword_search(enhanced_query, all_chunks, top_k=5)
         
         if not relevant_chunks:
             return {
@@ -327,7 +369,7 @@ def process_single_query(query, all_chunks):
         answer = call_gemini_api(prompt)
         
         # Calculate confidence based on chunk scores
-        avg_score = np.mean([chunk['score'] for chunk in relevant_chunks])
+        avg_score = sum(chunk['score'] for chunk in relevant_chunks) / len(relevant_chunks)
         confidence = min(avg_score * 1.5, 1.0)  # Scale confidence
         
         processing_time = time.time() - start_time
@@ -427,7 +469,7 @@ def analyze_document():
         total_time = time.time() - start_time
         
         # Calculate overall statistics
-        avg_confidence = np.mean([r['confidence'] for r in ordered_results])
+        avg_confidence = sum(r['confidence'] for r in ordered_results) / len(ordered_results)
         successful_queries = len([r for r in ordered_results if not r['answer'].startswith('Error')])
         
         response = {
@@ -457,7 +499,6 @@ def health_check():
     """Health check endpoint"""
     return jsonify({
         'status': 'healthy',
-        'embedder_loaded': embedder is not None,
         'gemini_api_configured': GEMINI_API_KEY is not None
     })
 
