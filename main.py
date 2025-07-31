@@ -14,20 +14,16 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, validator
 import os
 import tempfile
-import json
 import time
 import asyncio
-from typing import List, Dict, Union
-import gc
-import requests
+from typing import List, Union
 import uvicorn
 import traceback
 import re
 import fitz  # PyMuPDF
 import httpx
 from dotenv import load_dotenv
-from collections import Counter
-import string
+
 
 # Initialize FastAPI app
 app = FastAPI(
