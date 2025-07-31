@@ -3,7 +3,7 @@ setuptools
 fastapi==0.103.1
 uvicorn[standard]==0.29.0
 pydantic==2.3.0
-pymupdf==1.24.6
+pymupdf>=1.24.11
 python-dotenv==1.0.1
 requests==2.32.3
 python-multipart==0.0.6
