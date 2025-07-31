@@ -1,5 +1,5 @@
 """
-InsuranceAI - Accuracy Optimized with Gemini API (Target: 70%+ accuracy, <30s response)
+InsuranceAI - Accuracy Optimized with Gemini API (No sentence-transformers)
 """
 
 from fastapi import FastAPI, HTTPException, Depends
@@ -20,31 +20,21 @@ from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor
 import threading
 import json
-from sentence_transformers import SentenceTransformer
-import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
+from collections import Counter
+import math
 
 app = FastAPI(
     title="Insurance Claims Processing API - Gemini Powered",
     description="High-accuracy insurance claims processing with Gemini API <30s response time",
-    version="4.1.0"
+    version="4.2.0"
 )
 
 load_dotenv()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # Changed from HF_TOKEN
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 security = HTTPBearer()
 
-# Initialize embedding model (cached globally)
-embedding_model = None
 http_client = None
 executor = ThreadPoolExecutor(max_workers=6)
-
-def get_embedding_model():
-    global embedding_model
-    if embedding_model is None:
-        # Fast, accurate embedding model
-        embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-    return embedding_model
 
 class QARequest(BaseModel):
     documents: Union[str, List[str]]
@@ -57,7 +47,7 @@ class QARequest(BaseModel):
         return v
 
 class GeminiRateLimiter:
-    def __init__(self, max_requests_per_minute=15):  # Gemini has stricter limits
+    def __init__(self, max_requests_per_minute=15):
         self.max_requests = max_requests_per_minute
         self.requests = []
         self.lock = threading.Lock()
@@ -68,7 +58,7 @@ class GeminiRateLimiter:
             self.requests = [req_time for req_time in self.requests if now - req_time < 60]
             
             if len(self.requests) >= self.max_requests:
-                sleep_time = 4  # Longer wait for Gemini
+                sleep_time = 4
                 await asyncio.sleep(sleep_time)
                 self.requests = []
             
@@ -104,7 +94,6 @@ async def extract_pdf_enhanced(url: str) -> str:
         response.raise_for_status()
 
         with fitz.open(stream=response.content, filetype="pdf") as doc:
-            # Process more pages for better coverage
             max_pages = min(30, len(doc))
             text_parts = []
 
@@ -113,8 +102,8 @@ async def extract_pdf_enhanced(url: str) -> str:
                 text = page.get_text()
                 
                 # Better text cleaning
-                text = re.sub(r'\s+', ' ', text)  # Normalize whitespace
-                text = re.sub(r'[^\w\s\.\,\:\;\-\%\$\(\)]', ' ', text)  # Keep important chars
+                text = re.sub(r'\s+', ' ', text)
+                text = re.sub(r'[^\w\s\.\,\:\;\-\%\$\(\)]', ' ', text)
                 text_parts.append(text)
 
             full_text = "\n".join(text_parts)
@@ -134,9 +123,7 @@ def smart_chunking(text: str, chunk_size: int = 1500, overlap: int = 300) -> Lis
     while start < len(text):
         end = min(start + chunk_size, len(text))
 
-        # Better boundary detection
         if end < len(text):
-            # Look for sentence boundaries first
             for delimiter in [". ", ".\n", "\n\n", ": ", ";\n"]:
                 last_pos = text.rfind(delimiter, start + chunk_size - 400, end)
                 if last_pos > start + chunk_size // 3:
@@ -144,7 +131,7 @@ def smart_chunking(text: str, chunk_size: int = 1500, overlap: int = 300) -> Lis
                     break
 
         chunk = text[start:end].strip()
-        if len(chunk) > 100:  # Filter very short chunks
+        if len(chunk) > 100:
             chunks.append(chunk)
 
         start = max(end - overlap, end)
@@ -153,86 +140,143 @@ def smart_chunking(text: str, chunk_size: int = 1500, overlap: int = 300) -> Lis
 
     return chunks
 
-def enhanced_keyword_scoring(question: str, chunk: str) -> float:
-    """Enhanced keyword scoring with insurance domain knowledge"""
+def advanced_keyword_scoring(question: str, chunk: str) -> float:
+    """Advanced keyword scoring with TF-IDF-like approach and domain knowledge"""
     q_lower = question.lower()
     c_lower = chunk.lower()
 
-    # Extract meaningful keywords (3+ chars, not stopwords)
-    stopwords = {'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'her', 'was', 'one', 'our', 'out', 'day', 'get', 'has', 'him', 'his', 'how', 'man', 'new', 'now', 'old', 'see', 'two', 'way', 'who', 'boy', 'did', 'its', 'let', 'put', 'say', 'she', 'too', 'use'}
+    # Enhanced stopwords list
+    stopwords = {
+        'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'her', 'was', 'one', 
+        'our', 'out', 'day', 'get', 'has', 'him', 'his', 'how', 'man', 'new', 'now', 'old', 'see', 
+        'two', 'way', 'who', 'boy', 'did', 'its', 'let', 'put', 'say', 'she', 'too', 'use', 'will',
+        'would', 'could', 'should', 'may', 'might', 'must', 'shall', 'can', 'about', 'after', 'before',
+        'during', 'under', 'over', 'through', 'between', 'among', 'within', 'without', 'against'
+    }
     
-    q_words = set(word for word in re.findall(r'\b\w{3,}\b', q_lower) if word not in stopwords)
+    # Extract meaningful keywords
+    q_words = [word for word in re.findall(r'\b\w{3,}\b', q_lower) if word not in stopwords]
+    c_words = [word for word in re.findall(r'\b\w{3,}\b', c_lower) if word not in stopwords]
+    
     if not q_words:
         return 0.0
 
-    # Basic keyword matching
-    score = sum(1 for word in q_words if word in c_lower) / len(q_words)
+    # Calculate word frequencies in chunk
+    c_word_freq = Counter(c_words)
+    total_c_words = len(c_words)
 
-    # Insurance-specific term boosting
+    # TF-IDF-like scoring
+    score = 0.0
+    matched_words = 0
+    
+    for q_word in q_words:
+        if q_word in c_word_freq:
+            # Term frequency in chunk
+            tf = c_word_freq[q_word] / total_c_words if total_c_words > 0 else 0
+            # Simple IDF approximation (longer words are more important)
+            idf = math.log(len(q_word)) if len(q_word) > 3 else 1
+            score += tf * idf
+            matched_words += 1
+
+    # Base score
+    base_score = (matched_words / len(q_words)) * (score / len(q_words)) if q_words else 0
+
+    # Insurance domain-specific boosting
     insurance_terms = {
-        'grace period': 2.0,
-        'waiting period': 2.0,
-        'maternity': 1.5,
-        'cataract': 1.5,
-        'discount': 1.5,
-        'ayush': 1.5,
-        'premium': 1.3,
-        'coverage': 1.3,
-        'deductible': 1.3,
-        'copay': 1.3,
-        'claim': 1.3,
-        'policy': 1.2,
-        'benefit': 1.2
+        'grace period': 3.0,
+        'waiting period': 3.0,
+        'maternity benefit': 2.5,
+        'maternity coverage': 2.5,
+        'cataract surgery': 2.5,
+        'cataract treatment': 2.5,
+        'discount rate': 2.0,
+        'discount percentage': 2.0,
+        'ayush treatment': 2.0,
+        'ayush benefit': 2.0,
+        'premium amount': 1.8,
+        'premium cost': 1.8,
+        'coverage limit': 1.8,
+        'coverage amount': 1.8,
+        'deductible amount': 1.8,
+        'copay amount': 1.8,
+        'claim amount': 1.8,
+        'claim limit': 1.8,
+        'policy term': 1.5,
+        'policy period': 1.5,
+        'benefit amount': 1.5,
+        'benefit limit': 1.5,
+        'waiting': 1.3,
+        'grace': 1.3,
+        'maternity': 1.3,
+        'cataract': 1.3,
+        'discount': 1.3,
+        'ayush': 1.3,
+        'premium': 1.2,
+        'coverage': 1.2,
+        'deductible': 1.2,
+        'copay': 1.2,
+        'claim': 1.2,
+        'policy': 1.1,
+        'benefit': 1.1
     }
 
+    # Apply domain boosting
+    domain_boost = 1.0
     for term, boost in insurance_terms.items():
         if term in q_lower and term in c_lower:
-            score *= boost
+            domain_boost *= boost
+            break  # Apply only the first matching boost
 
     # Numerical information bonus
-    if re.search(r'\d+\s*(days|months|years|%|\$)', c_lower):
-        score *= 1.3
+    numerical_bonus = 1.0
+    if re.search(r'\d+\s*(days|months|years|%|\$|rupees|rs)', c_lower):
+        numerical_bonus = 1.4
 
     # Exact phrase matching bonus
-    q_phrases = re.findall(r'\b\w+\s+\w+\b', q_lower)
+    phrase_bonus = 1.0
+    q_phrases = re.findall(r'\b\w+\s+\w+(?:\s+\w+)?\b', q_lower)
     for phrase in q_phrases:
-        if phrase in c_lower:
-            score *= 1.4
+        if len(phrase.split()) >= 2 and phrase in c_lower:
+            phrase_bonus *= 1.5
 
-    return min(score, 3.0)  # Cap the score
+    # Question type specific boosting
+    question_type_bonus = 1.0
+    if any(word in q_lower for word in ['what', 'how much', 'how many', 'when', 'where']):
+        if any(word in c_lower for word in ['amount', 'cost', 'price', 'fee', 'charge', 'rate', 'percentage']):
+            question_type_bonus = 1.3
 
-def semantic_similarity_scoring(question: str, chunk: str, model) -> float:
-    """Semantic similarity using embeddings"""
-    try:
-        q_embedding = model.encode([question])
-        c_embedding = model.encode([chunk])
-        similarity = cosine_similarity(q_embedding, c_embedding)[0][0]
-        return float(similarity)
-    except:
-        return 0.0
+    # Final score calculation
+    final_score = base_score * domain_boost * numerical_bonus * phrase_bonus * question_type_bonus
+    
+    return min(final_score, 5.0)  # Cap the score
 
-def hybrid_chunk_retrieval(question: str, chunks: List[str], top_k: int = 5) -> List[str]:
-    """Hybrid retrieval combining keyword and semantic similarity"""
+def enhanced_chunk_retrieval(question: str, chunks: List[str], top_k: int = 6) -> List[str]:
+    """Enhanced keyword-based retrieval with advanced scoring"""
     if not chunks:
         return []
-
-    model = get_embedding_model()
     
     def score_chunk(chunk):
-        keyword_score = enhanced_keyword_scoring(question, chunk)
-        semantic_score = semantic_similarity_scoring(question, chunk, model)
-        # Weighted combination
-        return 0.6 * keyword_score + 0.4 * semantic_score
+        return advanced_keyword_scoring(question, chunk)
 
     # Score chunks in parallel
     with ThreadPoolExecutor(max_workers=4) as executor:
         scores = list(executor.map(score_chunk, chunks))
 
     # Get top chunks with minimum threshold
-    scored_chunks = [(score, chunk) for score, chunk in zip(scores, chunks) if score > 0.1]
+    scored_chunks = [(score, chunk) for score, chunk in zip(scores, chunks) if score > 0.05]
     scored_chunks.sort(reverse=True, key=lambda x: x[0])
 
-    return [chunk for _, chunk in scored_chunks[:top_k]]
+    # Return top chunks
+    top_chunks = [chunk for _, chunk in scored_chunks[:top_k]]
+    
+    # If we don't have enough high-scoring chunks, add some medium-scoring ones
+    if len(top_chunks) < 3:
+        medium_chunks = [(score, chunk) for score, chunk in zip(scores, chunks) if 0.01 <= score <= 0.05]
+        medium_chunks.sort(reverse=True, key=lambda x: x[0])
+        additional_chunks = [chunk for _, chunk in medium_chunks[:3-len(top_chunks)]]
+        top_chunks.extend(additional_chunks)
+
+    return top_chunks
 
 def create_gemini_prompt(questions: List[str], context_map: Dict[str, List[str]]) -> str:
     """Create optimized prompt for Gemini API"""
@@ -240,8 +284,12 @@ def create_gemini_prompt(questions: List[str], context_map: Dict[str, List[str]]
 
     for i, question in enumerate(questions, 1):
         # Use top 4 chunks for better context
-        context = "\n---\n".join(context_map.get(question, [])[:4])
-        question_contexts.append(f"Question {i}: {question}\nRelevant Context:\n{context}\n")
+        relevant_chunks = context_map.get(question, [])[:4]
+        if relevant_chunks:
+            context = "\n---\n".join(relevant_chunks)
+            question_contexts.append(f"Question {i}: {question}\nRelevant Context:\n{context}\n")
+        else:
+            question_contexts.append(f"Question {i}: {question}\nRelevant Context:\nNo relevant context found.\n")
 
     # Optimized prompt for Gemini
     prompt = f"""You are an expert insurance analyst. Answer each question accurately using ONLY the provided context.
@@ -251,12 +299,13 @@ CRITICAL INSTRUCTIONS:
 - If information is not in the context, respond "Information not available in provided context"
 - Be precise and factual
 - Do not make assumptions or add external knowledge
+- Focus on extracting exact values and specific details
 
 REQUIRED FORMAT: A1: [detailed answer] A2: [detailed answer] A3: [detailed answer]...
 
 {chr(10).join(question_contexts)}
 
-Remember: Answer in the exact format A1:, A2:, A3:, etc. Use only the provided context."""
+Remember: Answer in the exact format A1:, A2:, A3:, etc. Use only the provided context. Be specific with numbers and details."""
 
     return prompt
 
@@ -283,7 +332,7 @@ async def call_gemini_api(prompt: str) -> str:
             }
         ],
         "generationConfig": {
-            "temperature": 0.1,  # Low temperature for consistency
+            "temperature": 0.1,
             "topP": 0.8,
             "maxOutputTokens": 1500,
             "candidateCount": 1
@@ -368,18 +417,18 @@ def enhanced_answer_parsing(response: str, expected_count: int) -> List[str]:
 @app.get("/")
 async def root():
     return {
-        "message": "Insurance Claims Processing API - Gemini Powered",
-        "version": "4.1.0",
+        "message": "Insurance Claims Processing API - Gemini Powered (No ML Dependencies)",
+        "version": "4.2.0",
         "model": "Gemini 2.0 Flash",
-        "target_accuracy": "70%+",
+        "target_accuracy": "65%+",
         "target_response_time": "<30 seconds",
         "improvements": [
-            "Gemini 2.0 Flash API integration",
-            "Hybrid retrieval (keyword + semantic)",
+            "Advanced keyword-based retrieval",
+            "TF-IDF-like scoring",
+            "Enhanced domain knowledge",
             "Better chunking strategy",
-            "Enhanced prompt engineering",
-            "Domain-specific scoring",
-            "Better text preprocessing"
+            "Optimized prompt engineering",
+            "No ML dependencies for Vercel compatibility"
         ]
     }
 
@@ -388,7 +437,7 @@ async def document_qa_gemini(
     req: QARequest,
     token: str = Depends(verify_bearer_token)
 ):
-    """Gemini-powered Document Q&A optimized for accuracy"""
+    """Gemini-powered Document Q&A optimized for accuracy without ML dependencies"""
     start_time = time.time()
 
     try:
@@ -410,9 +459,9 @@ async def document_qa_gemini(
         del pdf_texts
         gc.collect()
 
-        # Step 3: Hybrid retrieval
+        # Step 3: Enhanced keyword-based retrieval
         async def find_chunks_for_question(question):
-            return hybrid_chunk_retrieval(question, all_chunks, top_k=5)
+            return enhanced_chunk_retrieval(question, all_chunks, top_k=6)
 
         chunk_tasks = [find_chunks_for_question(q) for q in req.questions]
         chunk_results = await asyncio.gather(*chunk_tasks)
@@ -443,8 +492,8 @@ async def shutdown_event():
         await http_client.aclose()
 
 if __name__ == "__main__":
-    print("🤖 Starting Gemini-Powered Insurance API...")
-    print("📈 Target: 70%+ accuracy in <30 seconds")
+    print("🤖 Starting Gemini-Powered Insurance API (No ML Dependencies)...")
+    print("📈 Target: 65%+ accuracy in <30 seconds")
     
     uvicorn.run(
         "main:app",
