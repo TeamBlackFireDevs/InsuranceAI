@@ -1,322 +1,73 @@
-"""
-InsuranceAI - Accuracy Optimized with Gemini API (No sentence-transformers)
-"""
-
-from fastapi import FastAPI, HTTPException, Depends
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel, validator
 import os
-import time
-import asyncio
-from typing import List, Dict, Union
-import gc
-import requests
-import uvicorn
-import traceback
-import re
-import fitz
-import httpx
-from dotenv import load_dotenv
-from concurrent.futures import ThreadPoolExecutor
-import threading
 import json
-from collections import Counter
-import math
+import requests
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from flask import Flask, request, jsonify
+import PyPDF2
+import io
+import re
+from sentence_transformers import SentenceTransformer
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
+import logging
 
-app = FastAPI(
-    title="Insurance Claims Processing API - Gemini Powered",
-    description="High-accuracy insurance claims processing with Gemini API <30s response time",
-    version="4.2.0"
-)
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-load_dotenv()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-security = HTTPBearer()
+app = Flask(__name__)
 
-http_client = None
-executor = ThreadPoolExecutor(max_workers=6)
+# Gemini API configuration
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
-class QARequest(BaseModel):
-    documents: Union[str, List[str]]
-    questions: List[str]
+# Initialize sentence transformer model
+try:
+    embedder = SentenceTransformer('all-MiniLM-L6-v2')
+    logger.info("Sentence transformer model loaded successfully")
+except Exception as e:
+    logger.error(f"Failed to load sentence transformer: {e}")
+    embedder = None
 
-    @validator("documents", pre=True)
-    def normalize_documents(cls, v):
-        if isinstance(v, str):
-            return [v]
-        return v
-
-class GeminiRateLimiter:
-    def __init__(self, max_requests_per_minute=15):
-        self.max_requests = max_requests_per_minute
-        self.requests = []
-        self.lock = threading.Lock()
-
-    async def acquire(self):
-        with self.lock:
-            now = time.time()
-            self.requests = [req_time for req_time in self.requests if now - req_time < 60]
-            
-            if len(self.requests) >= self.max_requests:
-                sleep_time = 4
-                await asyncio.sleep(sleep_time)
-                self.requests = []
-            
-            self.requests.append(now)
-
-rate_limiter = GeminiRateLimiter()
-
-def verify_bearer_token(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
-    token = credentials.credentials
-    VALID_DEV_TOKENS = [
-        "36ef8e0c602e88f944e5475c5ecbe62ecca6aef1702bb1a6f70854a3b993ed5"
+# Training data for insurance domain
+TRAINING_PATTERNS = {
+    "policy_terms": [
+        "grace period", "waiting period", "pre-existing conditions", "sum insured",
+        "deductible", "co-payment", "room rent", "ICU charges", "daycare procedures"
+    ],
+    "coverage_types": [
+        "inpatient", "outpatient", "daycare", "AYUSH", "domiciliary", "maternity",
+        "dental", "optical", "preventive health check"
+    ],
+    "exclusions": [
+        "suicide", "war", "nuclear risks", "cosmetic surgery", "experimental treatment",
+        "self-inflicted injury", "alcohol", "drugs"
+    ],
+    "claim_process": [
+        "cashless", "reimbursement", "pre-authorization", "claim settlement",
+        "network hospital", "TPA", "claim documents"
     ]
-    
-    if token in VALID_DEV_TOKENS or len(token) > 10:
-        return token
-    
-    raise HTTPException(status_code=401, detail="Invalid bearer token")
+}
 
-async def get_http_client():
-    global http_client
-    if http_client is None:
-        http_client = httpx.AsyncClient(
-            timeout=25,
-            limits=httpx.Limits(max_connections=8, max_keepalive_connections=4)
-        )
-    return http_client
-
-async def extract_pdf_enhanced(url: str) -> str:
-    """Enhanced PDF extraction with better text cleaning"""
-    try:
-        client = await get_http_client()
-        response = await client.get(url, follow_redirects=True)
-        response.raise_for_status()
-
-        with fitz.open(stream=response.content, filetype="pdf") as doc:
-            max_pages = min(30, len(doc))
-            text_parts = []
-
-            for page_num in range(max_pages):
-                page = doc[page_num]
-                text = page.get_text()
-                
-                # Better text cleaning
-                text = re.sub(r'\s+', ' ', text)
-                text = re.sub(r'[^\w\s\.\,\:\;\-\%\$\(\)]', ' ', text)
-                text_parts.append(text)
-
-            full_text = "\n".join(text_parts)
-            return full_text
-
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"PDF extraction failed: {str(e)}")
-
-def smart_chunking(text: str, chunk_size: int = 1500, overlap: int = 300) -> List[str]:
-    """Improved chunking with semantic boundaries"""
-    if len(text) <= chunk_size:
-        return [text]
-
-    chunks = []
-    start = 0
-
-    while start < len(text):
-        end = min(start + chunk_size, len(text))
-
-        if end < len(text):
-            for delimiter in [". ", ".\n", "\n\n", ": ", ";\n"]:
-                last_pos = text.rfind(delimiter, start + chunk_size - 400, end)
-                if last_pos > start + chunk_size // 3:
-                    end = last_pos + len(delimiter)
-                    break
-
-        chunk = text[start:end].strip()
-        if len(chunk) > 100:
-            chunks.append(chunk)
-
-        start = max(end - overlap, end)
-        if start >= len(text):
-            break
-
-    return chunks
-
-def advanced_keyword_scoring(question: str, chunk: str) -> float:
-    """Advanced keyword scoring with TF-IDF-like approach and domain knowledge"""
-    q_lower = question.lower()
-    c_lower = chunk.lower()
-
-    # Enhanced stopwords list
-    stopwords = {
-        'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'her', 'was', 'one', 
-        'our', 'out', 'day', 'get', 'has', 'him', 'his', 'how', 'man', 'new', 'now', 'old', 'see', 
-        'two', 'way', 'who', 'boy', 'did', 'its', 'let', 'put', 'say', 'she', 'too', 'use', 'will',
-        'would', 'could', 'should', 'may', 'might', 'must', 'shall', 'can', 'about', 'after', 'before',
-        'during', 'under', 'over', 'through', 'between', 'among', 'within', 'without', 'against'
+SAMPLE_QA_PATTERNS = [
+    {
+        "pattern": "grace period",
+        "response_format": "The grace period is [X days/months] from the due date of premium payment."
+    },
+    {
+        "pattern": "hospital definition",
+        "response_format": "A hospital is defined as [specific definition from policy]."
+    },
+    {
+        "pattern": "room rent coverage",
+        "response_format": "Room rent is covered up to [amount/percentage] as per the plan selected."
     }
-    
-    # Extract meaningful keywords
-    q_words = [word for word in re.findall(r'\b\w{3,}\b', q_lower) if word not in stopwords]
-    c_words = [word for word in re.findall(r'\b\w{3,}\b', c_lower) if word not in stopwords]
-    
-    if not q_words:
-        return 0.0
+]
 
-    # Calculate word frequencies in chunk
-    c_word_freq = Counter(c_words)
-    total_c_words = len(c_words)
-
-    # TF-IDF-like scoring
-    score = 0.0
-    matched_words = 0
-    
-    for q_word in q_words:
-        if q_word in c_word_freq:
-            # Term frequency in chunk
-            tf = c_word_freq[q_word] / total_c_words if total_c_words > 0 else 0
-            # Simple IDF approximation (longer words are more important)
-            idf = math.log(len(q_word)) if len(q_word) > 3 else 1
-            score += tf * idf
-            matched_words += 1
-
-    # Base score
-    base_score = (matched_words / len(q_words)) * (score / len(q_words)) if q_words else 0
-
-    # Insurance domain-specific boosting
-    insurance_terms = {
-        'grace period': 3.0,
-        'waiting period': 3.0,
-        'maternity benefit': 2.5,
-        'maternity coverage': 2.5,
-        'cataract surgery': 2.5,
-        'cataract treatment': 2.5,
-        'discount rate': 2.0,
-        'discount percentage': 2.0,
-        'ayush treatment': 2.0,
-        'ayush benefit': 2.0,
-        'premium amount': 1.8,
-        'premium cost': 1.8,
-        'coverage limit': 1.8,
-        'coverage amount': 1.8,
-        'deductible amount': 1.8,
-        'copay amount': 1.8,
-        'claim amount': 1.8,
-        'claim limit': 1.8,
-        'policy term': 1.5,
-        'policy period': 1.5,
-        'benefit amount': 1.5,
-        'benefit limit': 1.5,
-        'waiting': 1.3,
-        'grace': 1.3,
-        'maternity': 1.3,
-        'cataract': 1.3,
-        'discount': 1.3,
-        'ayush': 1.3,
-        'premium': 1.2,
-        'coverage': 1.2,
-        'deductible': 1.2,
-        'copay': 1.2,
-        'claim': 1.2,
-        'policy': 1.1,
-        'benefit': 1.1
-    }
-
-    # Apply domain boosting
-    domain_boost = 1.0
-    for term, boost in insurance_terms.items():
-        if term in q_lower and term in c_lower:
-            domain_boost *= boost
-            break  # Apply only the first matching boost
-
-    # Numerical information bonus
-    numerical_bonus = 1.0
-    if re.search(r'\d+\s*(days|months|years|%|\$|rupees|rs)', c_lower):
-        numerical_bonus = 1.4
-
-    # Exact phrase matching bonus
-    phrase_bonus = 1.0
-    q_phrases = re.findall(r'\b\w+\s+\w+(?:\s+\w+)?\b', q_lower)
-    for phrase in q_phrases:
-        if len(phrase.split()) >= 2 and phrase in c_lower:
-            phrase_bonus *= 1.5
-
-    # Question type specific boosting
-    question_type_bonus = 1.0
-    if any(word in q_lower for word in ['what', 'how much', 'how many', 'when', 'where']):
-        if any(word in c_lower for word in ['amount', 'cost', 'price', 'fee', 'charge', 'rate', 'percentage']):
-            question_type_bonus = 1.3
-
-    # Final score calculation
-    final_score = base_score * domain_boost * numerical_bonus * phrase_bonus * question_type_bonus
-    
-    return min(final_score, 5.0)  # Cap the score
-
-def enhanced_chunk_retrieval(question: str, chunks: List[str], top_k: int = 6) -> List[str]:
-    """Enhanced keyword-based retrieval with advanced scoring"""
-    if not chunks:
-        return []
-    
-    def score_chunk(chunk):
-        return advanced_keyword_scoring(question, chunk)
-
-    # Score chunks in parallel
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        scores = list(executor.map(score_chunk, chunks))
-
-    # Get top chunks with minimum threshold
-    scored_chunks = [(score, chunk) for score, chunk in zip(scores, chunks) if score > 0.05]
-    scored_chunks.sort(reverse=True, key=lambda x: x[0])
-
-    # Return top chunks
-    top_chunks = [chunk for _, chunk in scored_chunks[:top_k]]
-    
-    # If we don't have enough high-scoring chunks, add some medium-scoring ones
-    if len(top_chunks) < 3:
-        medium_chunks = [(score, chunk) for score, chunk in zip(scores, chunks) if 0.01 <= score <= 0.05]
-        medium_chunks.sort(reverse=True, key=lambda x: x[0])
-        additional_chunks = [chunk for _, chunk in medium_chunks[:3-len(top_chunks)]]
-        top_chunks.extend(additional_chunks)
-
-    return top_chunks
-
-def create_gemini_prompt(questions: List[str], context_map: Dict[str, List[str]]) -> str:
-    """Create optimized prompt for Gemini API"""
-    question_contexts = []
-
-    for i, question in enumerate(questions, 1):
-        # Use top 4 chunks for better context
-        relevant_chunks = context_map.get(question, [])[:4]
-        if relevant_chunks:
-            context = "\n---\n".join(relevant_chunks)
-            question_contexts.append(f"Question {i}: {question}\nRelevant Context:\n{context}\n")
-        else:
-            question_contexts.append(f"Question {i}: {question}\nRelevant Context:\nNo relevant context found.\n")
-
-    # Optimized prompt for Gemini
-    prompt = f"""You are an expert insurance analyst. Answer each question accurately using ONLY the provided context.
-
-CRITICAL INSTRUCTIONS:
-- Use specific details, numbers, percentages, and timeframes from the context
-- If information is not in the context, respond "Information not available in provided context"
-- Be precise and factual
-- Do not make assumptions or add external knowledge
-- Focus on extracting exact values and specific details
-
-REQUIRED FORMAT: A1: [detailed answer] A2: [detailed answer] A3: [detailed answer]...
-
-{chr(10).join(question_contexts)}
-
-Remember: Answer in the exact format A1:, A2:, A3:, etc. Use only the provided context. Be specific with numbers and details."""
-
-    return prompt
-
-async def call_gemini_api(prompt: str) -> str:
-    """Call Google Gemini API with enhanced error handling"""
-    if not GEMINI_API_KEY:
-        raise HTTPException(status_code=500, detail="GEMINI_API_KEY environment variable not set")
-
-    await rate_limiter.acquire()
-
+def call_gemini_api(prompt):
+    """Call Gemini API with specified configuration"""
     API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={GEMINI_API_KEY}"
+    
     headers = {
         "Content-Type": "application/json"
     }
@@ -358,147 +109,358 @@ async def call_gemini_api(prompt: str) -> str:
     }
 
     try:
-        client = await get_http_client()
-        response = await client.post(API_URL, headers=headers, json=payload)
-
-        if response.status_code == 429:
-            print("Rate limited, waiting...")
-            await asyncio.sleep(5)
-            response = await client.post(API_URL, headers=headers, json=payload)
-
+        response = requests.post(API_URL, headers=headers, json=payload, timeout=25)
         response.raise_for_status()
+        
         result = response.json()
-
         if 'candidates' in result and len(result['candidates']) > 0:
-            if 'content' in result['candidates'][0]:
-                return result['candidates'][0]['content']['parts'][0]['text']
-            else:
-                raise HTTPException(status_code=500, detail="Content blocked by safety filters")
+            return result['candidates'][0]['content']['parts'][0]['text']
         else:
-            raise HTTPException(status_code=500, detail="No response from Gemini API")
-
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 429:
-            raise HTTPException(status_code=429, detail="Rate limit exceeded")
-        else:
-            raise HTTPException(status_code=500, detail=f"Gemini API error: {str(e)}")
+            return "No response generated"
+            
+    except requests.exceptions.RequestException as e:
+        logger.error(f"API request failed: {e}")
+        return "Error: API request failed"
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"API call failed: {str(e)}")
+        logger.error(f"Error processing response: {e}")
+        return "Error: Failed to process response"
 
-def enhanced_answer_parsing(response: str, expected_count: int) -> List[str]:
-    """Enhanced answer parsing with fallback strategies"""
-    # Primary pattern
-    pattern = r'A(\d+):\s*(.+?)(?=A\d+:|$)'
-    matches = re.findall(pattern, response, re.DOTALL | re.IGNORECASE)
-
-    answers = ["Information not available in provided context."] * expected_count
-
-    for match in matches:
-        try:
-            answer_num = int(match[0]) - 1
-            if 0 <= answer_num < expected_count:
-                answer = match[1].strip()
-                # Clean up the answer
-                answer = re.sub(r'\n+', ' ', answer)
-                answer = re.sub(r'\s+', ' ', answer)
-                answers[answer_num] = answer
-        except (ValueError, IndexError):
-            continue
-
-    # Fallback: if no matches, try splitting by numbers
-    if all(ans == "Information not available in provided context." for ans in answers):
-        lines = response.split('\n')
-        for i, line in enumerate(lines[:expected_count]):
-            if line.strip():
-                answers[i] = line.strip()
-
-    return answers
-
-@app.get("/")
-async def root():
-    return {
-        "message": "Insurance Claims Processing API - Gemini Powered (No ML Dependencies)",
-        "version": "4.2.0",
-        "model": "Gemini 2.0 Flash",
-        "target_accuracy": "65%+",
-        "target_response_time": "<30 seconds",
-        "improvements": [
-            "Advanced keyword-based retrieval",
-            "TF-IDF-like scoring",
-            "Enhanced domain knowledge",
-            "Better chunking strategy",
-            "Optimized prompt engineering",
-            "No ML dependencies for Vercel compatibility"
-        ]
-    }
-
-@app.post("/api/v1/hackrx/run")
-async def document_qa_gemini(
-    req: QARequest,
-    token: str = Depends(verify_bearer_token)
-):
-    """Gemini-powered Document Q&A optimized for accuracy without ML dependencies"""
-    start_time = time.time()
-
+def extract_text_from_pdf(pdf_content):
+    """Extract text from PDF with improved parsing"""
     try:
-        print(f"🤖 Gemini processing of {len(req.questions)} questions")
-
-        # Step 1: Enhanced PDF extraction
-        extraction_tasks = [extract_pdf_enhanced(doc) for doc in req.documents]
-        pdf_texts = await asyncio.gather(*extraction_tasks)
-
-        # Step 2: Smart chunking
-        all_chunks = []
-        for text in pdf_texts:
-            chunks = smart_chunking(text, chunk_size=1500, overlap=300)
-            all_chunks.extend(chunks)
-
-        print(f"📚 Created {len(all_chunks)} enhanced chunks")
-
-        # Memory cleanup
-        del pdf_texts
-        gc.collect()
-
-        # Step 3: Enhanced keyword-based retrieval
-        async def find_chunks_for_question(question):
-            return enhanced_chunk_retrieval(question, all_chunks, top_k=6)
-
-        chunk_tasks = [find_chunks_for_question(q) for q in req.questions]
-        chunk_results = await asyncio.gather(*chunk_tasks)
-
-        context_map = dict(zip(req.questions, chunk_results))
-
-        # Step 4: Gemini API call
-        prompt = create_gemini_prompt(req.questions, context_map)
-        batch_response = await call_gemini_api(prompt)
-
-        # Step 5: Enhanced answer parsing
-        answers = enhanced_answer_parsing(batch_response, len(req.questions))
-
-        elapsed_time = time.time() - start_time
-        print(f"✅ Completed in {elapsed_time:.2f} seconds")
-
-        return {"answers": answers}
-
+        pdf_file = io.BytesIO(pdf_content)
+        pdf_reader = PyPDF2.PdfReader(pdf_file)
+        
+        text = ""
+        for page_num, page in enumerate(pdf_reader.pages):
+            try:
+                page_text = page.extract_text()
+                # Clean and normalize text
+                page_text = re.sub(r'\s+', ' ', page_text)
+                page_text = re.sub(r'[^\w\s\.\,\;\:\!\?\-\(\)\[\]]', ' ', page_text)
+                text += f"\n--- Page {page_num + 1} ---\n{page_text}\n"
+            except Exception as e:
+                logger.warning(f"Error extracting text from page {page_num + 1}: {e}")
+                continue
+        
+        return text.strip()
     except Exception as e:
-        print(f"❌ Error: {str(e)}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+        logger.error(f"Error extracting text from PDF: {e}")
+        return ""
 
-@app.on_event("shutdown")
-async def shutdown_event():
-    global http_client
-    if http_client:
-        await http_client.aclose()
-
-if __name__ == "__main__":
-    print("🤖 Starting Gemini-Powered Insurance API (No ML Dependencies)...")
-    print("📈 Target: 65%+ accuracy in <30 seconds")
+def smart_chunk_text(text, chunk_size=800, overlap=200):
+    """Create intelligent chunks with semantic boundaries"""
+    if not text:
+        return []
     
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
-        log_level="info"
-    )
+    # Split by sections first (looking for headers, numbered items, etc.)
+    section_patterns = [
+        r'\n\d+\.\s+[A-Z][^.]*\n',  # Numbered sections
+        r'\n[A-Z][A-Z\s]{10,}\n',   # ALL CAPS headers
+        r'\n[A-Z][a-z\s]{5,}:\s*\n', # Title: format
+        r'\n---[^-]*---\n'          # Page breaks
+    ]
+    
+    chunks = []
+    current_chunk = ""
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    
+    for sentence in sentences:
+        if len(current_chunk) + len(sentence) > chunk_size:
+            if current_chunk:
+                chunks.append(current_chunk.strip())
+                # Keep overlap
+                words = current_chunk.split()
+                overlap_text = ' '.join(words[-overlap//5:]) if len(words) > overlap//5 else ""
+                current_chunk = overlap_text + " " + sentence
+            else:
+                current_chunk = sentence
+        else:
+            current_chunk += " " + sentence
+    
+    if current_chunk:
+        chunks.append(current_chunk.strip())
+    
+    return [chunk for chunk in chunks if len(chunk.strip()) > 50]
+
+def enhanced_similarity_search(query, chunks, top_k=5):
+    """Enhanced similarity search with multiple scoring methods"""
+    if not embedder or not chunks:
+        return []
+    
+    try:
+        # Get embeddings
+        query_embedding = embedder.encode([query])
+        chunk_embeddings = embedder.encode(chunks)
+        
+        # Cosine similarity
+        similarities = cosine_similarity(query_embedding, chunk_embeddings)[0]
+        
+        # Keyword matching boost
+        query_words = set(query.lower().split())
+        keyword_scores = []
+        
+        for chunk in chunks:
+            chunk_words = set(chunk.lower().split())
+            keyword_overlap = len(query_words.intersection(chunk_words))
+            keyword_score = keyword_overlap / len(query_words) if query_words else 0
+            keyword_scores.append(keyword_score)
+        
+        # Insurance domain boost
+        domain_scores = []
+        for chunk in chunks:
+            chunk_lower = chunk.lower()
+            domain_score = 0
+            for category, terms in TRAINING_PATTERNS.items():
+                for term in terms:
+                    if term.lower() in chunk_lower:
+                        domain_score += 0.1
+            domain_scores.append(min(domain_score, 1.0))
+        
+        # Combined scoring
+        combined_scores = []
+        for i in range(len(chunks)):
+            combined_score = (
+                similarities[i] * 0.6 +
+                keyword_scores[i] * 0.3 +
+                domain_scores[i] * 0.1
+            )
+            combined_scores.append(combined_score)
+        
+        # Get top chunks
+        top_indices = np.argsort(combined_scores)[-top_k:][::-1]
+        
+        return [
+            {
+                'text': chunks[i],
+                'score': combined_scores[i],
+                'similarity': similarities[i],
+                'keyword_score': keyword_scores[i],
+                'domain_score': domain_scores[i]
+            }
+            for i in top_indices if combined_scores[i] > 0.1
+        ]
+        
+    except Exception as e:
+        logger.error(f"Error in similarity search: {e}")
+        return []
+
+def enhance_query_with_training(query):
+    """Enhance query with insurance domain knowledge"""
+    enhanced_query = query
+    
+    # Add context based on training patterns
+    query_lower = query.lower()
+    
+    for category, terms in TRAINING_PATTERNS.items():
+        for term in terms:
+            if term.lower() in query_lower:
+                enhanced_query += f" (Related to {category}: {term})"
+                break
+    
+    return enhanced_query
+
+def create_enhanced_prompt(query, relevant_chunks, training_context=True):
+    """Create an enhanced prompt with training context"""
+    
+    base_prompt = f"""You are an expert insurance policy analyst. Answer the following question based ONLY on the provided policy document content.
+
+IMPORTANT INSTRUCTIONS:
+1. Answer based ONLY on the information provided in the context below
+2. If the information is not available in the context, clearly state "This information is not available in the provided policy document"
+3. Be specific and cite relevant sections when possible
+4. For numerical values, amounts, or percentages, quote them exactly as mentioned
+5. Use clear, professional language suitable for insurance customers
+
+"""
+
+    if training_context:
+        base_prompt += """
+INSURANCE DOMAIN GUIDELINES:
+- Grace periods are typically mentioned in premium payment sections
+- Coverage details are usually in benefits/coverage sections
+- Exclusions are listed in separate exclusion sections
+- Definitions are typically at the beginning or in a glossary section
+- Room rent and ICU charges are in benefit schedules or tables
+
+"""
+
+    context_text = "\n\n".join([
+        f"RELEVANT SECTION {i+1} (Score: {chunk['score']:.3f}):\n{chunk['text']}"
+        for i, chunk in enumerate(relevant_chunks[:3])
+    ])
+    
+    full_prompt = f"""{base_prompt}
+
+POLICY DOCUMENT CONTEXT:
+{context_text}
+
+QUESTION: {query}
+
+ANSWER:"""
+    
+    return full_prompt
+
+def process_single_query(query, all_chunks):
+    """Process a single query with enhanced retrieval"""
+    try:
+        start_time = time.time()
+        
+        # Enhance query
+        enhanced_query = enhance_query_with_training(query)
+        
+        # Get relevant chunks
+        relevant_chunks = enhanced_similarity_search(enhanced_query, all_chunks, top_k=5)
+        
+        if not relevant_chunks:
+            return {
+                'query': query,
+                'answer': 'No relevant information found in the policy document.',
+                'confidence': 0.0,
+                'processing_time': time.time() - start_time
+            }
+        
+        # Create prompt
+        prompt = create_enhanced_prompt(query, relevant_chunks)
+        
+        # Get answer from Gemini
+        answer = call_gemini_api(prompt)
+        
+        # Calculate confidence based on chunk scores
+        avg_score = np.mean([chunk['score'] for chunk in relevant_chunks])
+        confidence = min(avg_score * 1.5, 1.0)  # Scale confidence
+        
+        processing_time = time.time() - start_time
+        
+        return {
+            'query': query,
+            'answer': answer,
+            'confidence': confidence,
+            'processing_time': processing_time,
+            'relevant_chunks_count': len(relevant_chunks),
+            'top_chunk_score': relevant_chunks[0]['score'] if relevant_chunks else 0
+        }
+        
+    except Exception as e:
+        logger.error(f"Error processing query '{query}': {e}")
+        return {
+            'query': query,
+            'answer': f'Error processing query: {str(e)}',
+            'confidence': 0.0,
+            'processing_time': time.time() - start_time if 'start_time' in locals() else 0
+        }
+
+@app.route('/analyze', methods=['POST'])
+def analyze_document():
+    """Main endpoint for document analysis"""
+    start_time = time.time()
+    
+    try:
+        # Get file and queries
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file uploaded'}), 400
+        
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'error': 'No file selected'}), 400
+        
+        queries = request.form.get('queries', '[]')
+        try:
+            queries = json.loads(queries)
+        except json.JSONDecodeError:
+            return jsonify({'error': 'Invalid queries format'}), 400
+        
+        if not queries:
+            return jsonify({'error': 'No queries provided'}), 400
+        
+        # Extract text from PDF
+        logger.info("Extracting text from PDF...")
+        pdf_content = file.read()
+        text = extract_text_from_pdf(pdf_content)
+        
+        if not text:
+            return jsonify({'error': 'Could not extract text from PDF'}), 400
+        
+        # Create chunks
+        logger.info("Creating text chunks...")
+        chunks = smart_chunk_text(text, chunk_size=800, overlap=200)
+        
+        if not chunks:
+            return jsonify({'error': 'Could not create text chunks'}), 400
+        
+        logger.info(f"Created {len(chunks)} chunks")
+        
+        # Process queries in parallel
+        logger.info(f"Processing {len(queries)} queries...")
+        results = []
+        
+        # Use ThreadPoolExecutor for parallel processing
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            future_to_query = {
+                executor.submit(process_single_query, query, chunks): query 
+                for query in queries
+            }
+            
+            for future in as_completed(future_to_query):
+                try:
+                    result = future.result(timeout=25)  # 25 second timeout per query
+                    results.append(result)
+                except Exception as e:
+                    query = future_to_query[future]
+                    logger.error(f"Query '{query}' failed: {e}")
+                    results.append({
+                        'query': query,
+                        'answer': f'Error: {str(e)}',
+                        'confidence': 0.0,
+                        'processing_time': 0
+                    })
+        
+        # Sort results by original query order
+        query_to_result = {r['query']: r for r in results}
+        ordered_results = [query_to_result.get(q, {
+            'query': q,
+            'answer': 'Error: Query not processed',
+            'confidence': 0.0,
+            'processing_time': 0
+        }) for q in queries]
+        
+        total_time = time.time() - start_time
+        
+        # Calculate overall statistics
+        avg_confidence = np.mean([r['confidence'] for r in ordered_results])
+        successful_queries = len([r for r in ordered_results if not r['answer'].startswith('Error')])
+        
+        response = {
+            'results': ordered_results,
+            'summary': {
+                'total_queries': len(queries),
+                'successful_queries': successful_queries,
+                'average_confidence': avg_confidence,
+                'total_processing_time': total_time,
+                'chunks_created': len(chunks),
+                'text_length': len(text)
+            }
+        }
+        
+        logger.info(f"Analysis completed in {total_time:.2f} seconds")
+        return jsonify(response)
+        
+    except Exception as e:
+        logger.error(f"Error in analyze_document: {e}")
+        return jsonify({
+            'error': f'Internal server error: {str(e)}',
+            'processing_time': time.time() - start_time
+        }), 500
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    return jsonify({
+        'status': 'healthy',
+        'embedder_loaded': embedder is not None,
+        'gemini_api_configured': GEMINI_API_KEY is not None
+    })
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
