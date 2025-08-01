@@ -1,12 +1,12 @@
 """
-InsuranceAI - Fixed Version with Gemini API & Enhanced Error Handling
-----
-Key fixes:
-1. Proper Gemini API integration with retry mechanism
-2. Enhanced chunk retrieval with multi-pass scoring
-3. Robust error handling for 503 errors
-4. Improved keyword extraction and matching
-5. Better context selection and processing
+Enhanced Insurance Policy Q&A System
+Designed for 80%+ accuracy on insurance policy queries
+Key improvements:
+1. Domain-specific chunking and keyword extraction
+2. Advanced semantic scoring with insurance context
+3. Optimized prompting for policy documents
+4. Robust error handling and rate limiting
+5. Multi-document context fusion
 """
 
 from fastapi import FastAPI, HTTPException, Depends
@@ -16,19 +16,21 @@ import os
 import tempfile
 import time
 import asyncio
-from typing import List, Union
+from typing import List, Union, Dict, Tuple
 import uvicorn
 import traceback
 import re
 import fitz  # PyMuPDF
 import httpx
 from dotenv import load_dotenv
+from collections import defaultdict
+import json
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="Insurance Claims Processing API - Fixed",
-    description="Fixed insurance claims processing with Gemini API and enhanced accuracy",
-    version="3.0.0"
+    title="Enhanced Insurance Policy Q&A API",
+    description="High-accuracy insurance policy analysis with 80%+ accuracy target",
+    version="4.0.0"
 )
 
 load_dotenv()
@@ -46,7 +48,7 @@ class QARequest(BaseModel):
         return v
 
 class AsyncRateLimiter:
-    def __init__(self, max_requests_per_minute=20):
+    def __init__(self, max_requests_per_minute=15):
         self.max_requests = max_requests_per_minute
         self.requests = []
         self.lock = asyncio.Lock()
@@ -54,7 +56,6 @@ class AsyncRateLimiter:
     async def acquire(self):
         async with self.lock:
             now = time.time()
-            # Remove requests older than 60 seconds
             self.requests = [req_time for req_time in self.requests if now - req_time < 60]
 
             if len(self.requests) >= self.max_requests:
@@ -71,16 +72,11 @@ def verify_bearer_token(credentials: HTTPAuthorizationCredentials = Depends(secu
     """Verify bearer token"""
     token = credentials.credentials
 
-    # Accept specific development tokens
     VALID_DEV_TOKENS = [
         "36ef8e0c602e88f944e5475c5ecbe62ecca6aef1702bb1a6f70854a3b993ed5"
     ]
 
-    if token in VALID_DEV_TOKENS:
-        print(f"✅ Token accepted: {token[:10]}...")
-        return token
-
-    if len(token) > 10:
+    if token in VALID_DEV_TOKENS or len(token) > 10:
         print(f"✅ Token accepted: {token[:10]}...")
         return token
 
@@ -91,38 +87,47 @@ def verify_bearer_token(credentials: HTTPAuthorizationCredentials = Depends(secu
     )
 
 async def extract_pdf_from_url_fast(url: str) -> str:
-    """Fast PDF extraction using PyMuPDF and async HTTP"""
+    """Enhanced PDF extraction with better text processing"""
     try:
         print(f"📄 Downloading PDF from: {url[:80]}...")
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=45) as client:
             response = await client.get(url, follow_redirects=True)
             response.raise_for_status()
 
         pdf_size = len(response.content)
         print(f"📖 Extracting text from PDF ({pdf_size} bytes)...")
 
-        # Save to temporary file for proper handling
         with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
             temp_file.write(response.content)
             temp_path = temp_file.name
 
         try:
-            # Use PyMuPDF for extraction
             doc = fitz.open(temp_path)
             text_pages = []
+
             for page_num in range(len(doc)):
                 page = doc[page_num]
-                text_pages.append(page.get_text())
+                # Enhanced text extraction with better formatting
+                text = page.get_text()
+
+                # Clean up common PDF artifacts
+                text = re.sub(r'\n+', '\n', text)
+                text = re.sub(r'\s+', ' ', text)
+                text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\xff]', '', text)
+
+                text_pages.append(text)
+
             doc.close()
+            full_text = "\n".join(text_pages)
 
-            text = "\n".join(text_pages)
-            print(f"✅ Extracted {len(text)} characters from {len(text_pages)} pages")
+            # Post-process the text
+            full_text = clean_extracted_text(full_text)
 
-            return text
+            print(f"✅ Extracted {len(full_text)} characters from {len(text_pages)} pages")
+            return full_text
 
         finally:
-            # Clean up temp file
             try:
                 os.unlink(temp_path)
             except:
@@ -132,269 +137,298 @@ async def extract_pdf_from_url_fast(url: str) -> str:
         print(f"❌ PDF extraction error: {str(e)}")
         raise HTTPException(status_code=400, detail=f"PDF extraction failed: {str(e)}")
 
-def extract_comprehensive_keywords(text: str) -> List[str]:
-    """Extract comprehensive keywords from insurance document"""
-    # Insurance-specific terms and patterns
-    insurance_patterns = [
-        r'grace period[s]?',
-        r'waiting period[s]?',
-        r'pre-existing disease[s]?',
-        r'maternity benefit[s]?',
-        r'cataract surgery',
-        r'organ donor',
-        r'no claim discount',
-        r'health check[- ]up[s]?',
-        r'ayush treatment[s]?',
-        r'room rent',
-        r'icu charges',
-        r'sub[- ]limit[s]?',
-        r'\d+\s*days?',
-        r'\d+\s*months?',
-        r'\d+\s*years?',
-        r'\d+%',
-        r'section\s+\d+',
-        r'clause\s+\d+',
-        r'premium payment',
-        r'policy period',
-        r'sum insured',
-        r'deductible',
-        r'co[- ]payment',
-        r'hospitalization',
-        r'in[- ]patient',
-        r'out[- ]patient',
-        r'emergency',
-        r'ambulance',
-        r'diagnostic',
-        r'pharmacy',
-        r'consultation'
-    ]
+def clean_extracted_text(text: str) -> str:
+    """Clean and normalize extracted PDF text"""
+    # Remove excessive whitespace
+    text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
+    text = re.sub(r'\s+', ' ', text)
 
-    keywords = set()
-    text_lower = text.lower()
+    # Fix common PDF extraction issues
+    text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)  # Add space between camelCase
+    text = re.sub(r'(\d+)([A-Za-z])', r'\1 \2', text)  # Space between numbers and letters
+    text = re.sub(r'([A-Za-z])(\d+)', r'\1 \2', text)  # Space between letters and numbers
 
-    # Extract pattern-based keywords
-    for pattern in insurance_patterns:
-        matches = re.findall(pattern, text_lower)
-        keywords.update(matches)
+    # Normalize section headers
+    text = re.sub(r'\n(SECTION|Section|CLAUSE|Clause)\s*(\d+)', r'\n\n\1 \2', text)
 
-    # Extract important numerical values with context
-    numerical_contexts = re.findall(r'([a-zA-Z\s]+\d+[\s]*(?:days?|months?|years?|%|rupees?|rs\.?))', text_lower)
-    keywords.update([match.strip() for match in numerical_contexts])
+    return text.strip()
 
-    # Extract section headers and important terms
-    section_headers = re.findall(r'(?:section|clause|article)\s+[\d\.]+[^\n]*', text_lower)
-    keywords.update(section_headers)
+class InsuranceDomainProcessor:
+    """Specialized processor for insurance domain knowledge"""
 
-    # Common insurance terms
-    common_terms = [
-        'premium', 'deductible', 'coverage', 'benefit', 'exclusion', 'claim',
-        'policy', 'insured', 'hospital', 'treatment', 'medical', 'surgery',
-        'diagnosis', 'therapy', 'consultation', 'emergency', 'ambulance'
-    ]
-
-    for term in common_terms:
-        if term in text_lower:
-            keywords.add(term)
-
-    result = list(keywords)[:100]  # Limit to top 100 keywords
-    print(f"📊 Extracted {len(result)} comprehensive keywords")
-    return result
-
-def create_comprehensive_chunks(text: str, chunk_size: int = 1200, overlap: int = 200) -> List[str]:
-    """Create comprehensive chunks with better context preservation"""
-    if len(text) <= chunk_size:
-        return [text]
-
-    chunks = []
-
-    # First, try to split by major sections
-    section_splits = re.split(r'\n(?=Section\s+\d+|SECTION\s+\d+|Chapter\s+\d+)', text)
-
-    for section in section_splits:
-        if len(section) <= chunk_size:
-            if section.strip():
-                chunks.append(section.strip())
-        else:
-            # Further split large sections
-            sub_chunks = split_text_intelligently(section, chunk_size, overlap)
-            chunks.extend(sub_chunks)
-
-    print(f"📚 Created {len(chunks)} comprehensive chunks")
-    return chunks
-
-def split_text_intelligently(text: str, chunk_size: int, overlap: int) -> List[str]:
-    """Intelligently split text preserving context"""
-    chunks = []
-    start = 0
-
-    while start < len(text):
-        end = min(start + chunk_size, len(text))
-
-        # Try to break at natural boundaries
-        if end < len(text):
-            # Look for good break points in order of preference
-            break_points = [
-                (r'\n\n', 2),  # Paragraph breaks
-                (r'\. ', 2),    # Sentence ends
-                (r', ', 2),      # Clause breaks
-                (r' ', 1)        # Word breaks
+    def __init__(self):
+        self.insurance_patterns = {
+            'grace_period': [
+                r'grace\s+period[s]?',
+                r'premium\s+payment\s+grace',
+                r'\d+\s*days?\s+grace',
+                r'grace\s+of\s+\d+\s*days?'
+            ],
+            'waiting_period': [
+                r'waiting\s+period[s]?',
+                r'wait\s+for\s+\d+\s*(?:days?|months?|years?)',
+                r'\d+\s*(?:days?|months?|years?)\s+waiting',
+                r'pre[- ]existing.*?\d+\s*(?:months?|years?)'
+            ],
+            'maternity': [
+                r'maternity\s+benefit[s]?',
+                r'maternity\s+coverage',
+                r'pregnancy\s+related',
+                r'childbirth\s+expenses',
+                r'delivery\s+charges'
+            ],
+            'hospital_definition': [
+                r'hospital.*?means',
+                r'definition.*?hospital',
+                r'hospital.*?defined\s+as',
+                r'hospital.*?refers\s+to',
+                r'hospital.*?includes'
+            ],
+            'ayush': [
+                r'ayush\s+treatment[s]?',
+                r'ayurveda.*?treatment',
+                r'homeopathy.*?treatment',
+                r'unani.*?treatment',
+                r'siddha.*?treatment'
+            ],
+            'room_rent': [
+                r'room\s+rent\s+limit[s]?',
+                r'room\s+charges?\s+limit',
+                r'accommodation\s+limit',
+                r'sub[- ]limit.*?room'
+            ],
+            'no_claim_discount': [
+                r'no\s+claim\s+discount',
+                r'ncd\s+benefit',
+                r'claim\s+free\s+discount',
+                r'bonus\s+for\s+no\s+claim'
             ]
+        }
 
-            for pattern, offset in break_points:
-                matches = list(re.finditer(pattern, text[start:end]))
+        self.numerical_patterns = [
+            r'\d+\s*days?',
+            r'\d+\s*months?',
+            r'\d+\s*years?',
+            r'\d+\s*%',
+            r'rs\.?\s*\d+',
+            r'rupees\s+\d+',
+            r'\d+\s*lakhs?',
+            r'\d+\s*crores?'
+        ]
+
+    def extract_domain_keywords(self, text: str) -> Dict[str, List[str]]:
+        """Extract domain-specific keywords with categories"""
+        text_lower = text.lower()
+        categorized_keywords = defaultdict(list)
+
+        # Extract pattern-based keywords
+        for category, patterns in self.insurance_patterns.items():
+            for pattern in patterns:
+                matches = re.findall(pattern, text_lower)
                 if matches:
-                    last_match = matches[-1]
-                    if last_match.start() > chunk_size // 2:  # Don't break too early
-                        end = start + last_match.end()
-                        break
+                    categorized_keywords[category].extend(matches)
 
-        chunk = text[start:end].strip()
-        if chunk:
-            chunks.append(chunk)
+        # Extract numerical contexts
+        numerical_matches = []
+        for pattern in self.numerical_patterns:
+            matches = re.findall(f'[^.\n]*{pattern}[^.\n]*', text_lower)
+            numerical_matches.extend(matches[:10])  # Limit to avoid noise
 
-        # Move start with overlap
-        start = max(end - overlap, start + 1)
-        if start >= len(text):
-            break
+        categorized_keywords['numerical'] = numerical_matches
 
-    return chunks
+        # Extract section references
+        section_refs = re.findall(r'section\s+\d+[^\n]*', text_lower)
+        categorized_keywords['sections'] = section_refs[:20]
 
-def multi_pass_chunk_retrieval(question: str, chunks: List[str], keywords: List[str]) -> List[str]:
-    """Multi-pass chunk retrieval with enhanced scoring"""
-    print(f"🔍 Starting multi-pass retrieval for: {question[:50]}...")
+        return dict(categorized_keywords)
 
-    # Pass 1: Direct keyword matching
-    direct_chunks = []
-    question_lower = question.lower()
-    question_words = set(re.findall(r'\b\w{3,}\b', question_lower))
+    def create_intelligent_chunks(self, text: str) -> List[Dict[str, any]]:
+        """Create intelligent chunks with metadata"""
+        chunks = []
 
-    for chunk in chunks:
-        chunk_lower = chunk.lower()
-        chunk_words = set(re.findall(r'\b\w{3,}\b', chunk_lower))
+        # First, split by major sections
+        section_pattern = r'\n(?=(?:SECTION|Section|CLAUSE|Clause)\s+\d+)'
+        sections = re.split(section_pattern, text)
 
-        # Calculate overlap
-        overlap = len(question_words & chunk_words)
-        if overlap > 0:
-            score = overlap / len(question_words)
+        for i, section in enumerate(sections):
+            if not section.strip():
+                continue
 
-            # Boost for exact phrase matches
-            for word in question_words:
-                if len(word) > 4 and word in chunk_lower:
-                    score += 0.2
+            # Determine chunk type
+            chunk_type = 'general'
+            if re.search(r'(?:SECTION|Section|CLAUSE|Clause)\s+\d+', section[:100]):
+                chunk_type = 'section_header'
+            elif any(word in section.lower()[:200] for word in ['means', 'defined as', 'definition']):
+                chunk_type = 'definition'
+            elif re.search(r'\d+\s*(?:days?|months?|years?)', section):
+                chunk_type = 'temporal'
 
-            # Boost for insurance-specific terms
-            insurance_boost = 0
-            insurance_terms = ['grace', 'waiting', 'period', 'maternity', 'cataract', 
-                             'donor', 'discount', 'health', 'ayush', 'room', 'icu']
-            for term in insurance_terms:
-                if term in question_lower and term in chunk_lower:
-                    insurance_boost += 0.3
+            # Split large sections into smaller chunks
+            if len(section) > 1500:
+                sub_chunks = self._split_large_section(section, 1200, 150)
+                for j, sub_chunk in enumerate(sub_chunks):
+                    chunks.append({
+                        'text': sub_chunk,
+                        'type': chunk_type,
+                        'section_id': i,
+                        'sub_id': j,
+                        'length': len(sub_chunk)
+                    })
+            else:
+                chunks.append({
+                    'text': section,
+                    'type': chunk_type,
+                    'section_id': i,
+                    'sub_id': 0,
+                    'length': len(section)
+                })
 
-            score += insurance_boost
-            direct_chunks.append((score, chunk))
+        print(f"📚 Created {len(chunks)} intelligent chunks")
+        return chunks
 
-    direct_chunks.sort(reverse=True, key=lambda x: x[0])
-    top_direct = [chunk for _, chunk in direct_chunks[:5]]
-    print(f"🎯 Pass 1 (Direct): {len(top_direct)} chunks")
+    def _split_large_section(self, text: str, chunk_size: int, overlap: int) -> List[str]:
+        """Split large sections intelligently"""
+        chunks = []
+        start = 0
 
-    # Pass 2: Semantic similarity using keywords
-    semantic_chunks = []
-    for chunk in chunks:
-        if chunk in top_direct:
-            continue
+        while start < len(text):
+            end = min(start + chunk_size, len(text))
 
-        chunk_lower = chunk.lower()
-        semantic_score = 0
+            if end < len(text):
+                # Find good break points
+                break_points = [
+                    (r'\n\n', 2),
+                    (r'\. ', 2),
+                    (r'; ', 2),
+                    (r', ', 2),
+                    (r' ', 1)
+                ]
 
-        # Check for related keywords
-        for keyword in keywords:
-            if keyword.lower() in chunk_lower:
-                semantic_score += 0.1
+                for pattern, offset in break_points:
+                    matches = list(re.finditer(pattern, text[start:end]))
+                    if matches:
+                        last_match = matches[-1]
+                        if last_match.start() > chunk_size // 3:
+                            end = start + last_match.end()
+                            break
 
-        # Check for numerical patterns if question has numbers
-        if re.search(r'\d+', question):
-            if re.search(r'\d+', chunk):
-                semantic_score += 0.2
+            chunk = text[start:end].strip()
+            if chunk:
+                chunks.append(chunk)
 
-        if semantic_score > 0:
-            semantic_chunks.append((semantic_score, chunk))
+            start = max(end - overlap, start + 1)
+            if start >= len(text):
+                break
 
-    semantic_chunks.sort(reverse=True, key=lambda x: x[0])
-    top_semantic = [chunk for _, chunk in semantic_chunks[:4]]
-    print(f"🎯 Pass 2 (Semantic): {len(top_semantic)} chunks")
+        return chunks
 
-    # Pass 3: Context expansion
-    context_chunks = []
-    all_selected = set(top_direct + top_semantic)
+class AdvancedRetriever:
+    """Advanced retrieval system with insurance domain knowledge"""
 
-    for chunk in chunks:
-        if chunk in all_selected:
-            continue
+    def __init__(self, processor: InsuranceDomainProcessor):
+        self.processor = processor
 
-        # Look for chunks that might provide context
-        context_score = 0
-        chunk_lower = chunk.lower()
+    def score_chunk_relevance(self, question: str, chunk: Dict[str, any], keywords: Dict[str, List[str]]) -> float:
+        """Advanced scoring with domain knowledge"""
+        question_lower = question.lower()
+        chunk_text_lower = chunk['text'].lower()
 
-        # Boost for definition-like content
-        if any(phrase in chunk_lower for phrase in ['means', 'defined as', 'refers to', 'includes']):
-            context_score += 0.2
+        score = 0.0
 
-        # Boost for section headers
-        if re.search(r'section\s+\d+', chunk_lower):
-            context_score += 0.1
+        # Base keyword matching
+        question_words = set(re.findall(r'\b\w{3,}\b', question_lower))
+        chunk_words = set(re.findall(r'\b\w{3,}\b', chunk_text_lower))
 
-        if context_score > 0:
-            context_chunks.append((context_score, chunk))
+        if question_words:
+            overlap_ratio = len(question_words & chunk_words) / len(question_words)
+            score += overlap_ratio * 2.0
 
-    context_chunks.sort(reverse=True, key=lambda x: x[0])
-    top_context = [chunk for _, chunk in context_chunks[:3]]
-    print(f"🎯 Pass 3 (Context): {len(top_context)} chunks")
+        # Domain-specific scoring
+        domain_scores = {
+            'grace': ['grace', 'premium', 'payment', 'days'],
+            'waiting': ['waiting', 'period', 'months', 'years', 'pre-existing'],
+            'maternity': ['maternity', 'pregnancy', 'delivery', 'childbirth'],
+            'hospital': ['hospital', 'definition', 'means', 'includes'],
+            'ayush': ['ayush', 'ayurveda', 'homeopathy', 'unani', 'siddha'],
+            'room': ['room', 'rent', 'limit', 'accommodation', 'charges'],
+            'discount': ['discount', 'ncd', 'claim', 'bonus'],
+            'cataract': ['cataract', 'surgery', 'eye', 'treatment'],
+            'donor': ['donor', 'organ', 'transplant', 'medical']
+        }
 
-    # Combine and deduplicate
-    final_chunks = []
-    all_scores = []
+        for domain, terms in domain_scores.items():
+            if any(term in question_lower for term in terms):
+                domain_score = sum(1 for term in terms if term in chunk_text_lower)
+                score += domain_score * 0.5
 
-    for score, chunk in direct_chunks[:5]:
-        if chunk not in final_chunks:
-            final_chunks.append(chunk)
-            all_scores.append(score)
+        # Chunk type bonuses
+        type_bonuses = {
+            'definition': 1.5 if any(word in question_lower for word in ['what', 'define', 'means', 'definition']) else 0.5,
+            'temporal': 1.2 if re.search(r'\d+\s*(?:days?|months?|years?)', question_lower) else 0.3,
+            'section_header': 0.8,
+            'general': 0.5
+        }
 
-    for score, chunk in semantic_chunks[:4]:
-        if chunk not in final_chunks:
-            final_chunks.append(chunk)
-            all_scores.append(score)
+        score += type_bonuses.get(chunk['type'], 0.5)
 
-    for score, chunk in context_chunks[:3]:
-        if chunk not in final_chunks:
-            final_chunks.append(chunk)
-            all_scores.append(score)
+        # Exact phrase matching bonus
+        question_phrases = re.findall(r'\b\w+\s+\w+\b', question_lower)
+        for phrase in question_phrases:
+            if phrase in chunk_text_lower:
+                score += 1.0
 
-    print(f"🎯 Final chunk scores: {[f'{score:.2f}' for score in all_scores[:5]]}")
-    print(f"✅ Final selection: {len(final_chunks)} chunks")
+        # Numerical matching bonus
+        question_numbers = re.findall(r'\d+', question_lower)
+        chunk_numbers = re.findall(r'\d+', chunk_text_lower)
 
-    return final_chunks[:8]  # Return top 8 chunks
+        if question_numbers and chunk_numbers:
+            common_numbers = set(question_numbers) & set(chunk_numbers)
+            score += len(common_numbers) * 0.8
+
+        return score
+
+    def retrieve_best_chunks(self, question: str, chunks: List[Dict[str, any]], keywords: Dict[str, List[str]], top_k: int = 6) -> List[str]:
+        """Retrieve best chunks using advanced scoring"""
+        print(f"🔍 Retrieving chunks for: {question[:60]}...")
+
+        scored_chunks = []
+        for chunk in chunks:
+            score = self.score_chunk_relevance(question, chunk, keywords)
+            if score > 0.1:  # Filter out very low-scoring chunks
+                scored_chunks.append((score, chunk))
+
+        # Sort by score and get top chunks
+        scored_chunks.sort(reverse=True, key=lambda x: x[0])
+
+        # Log top scores for debugging
+        top_scores = [f"{score:.2f}" for score, _ in scored_chunks[:5]]
+        print(f"🎯 Top chunk scores: {top_scores}")
+
+        # Return text of top chunks
+        selected_chunks = []
+        for score, chunk in scored_chunks[:top_k]:
+            selected_chunks.append(chunk['text'])
+
+        print(f"✅ Selected {len(selected_chunks)} chunks")
+        return selected_chunks
 
 async def call_gemini_api_with_retry(prompt: str, max_retries: int = 3) -> str:
-    """Call Gemini API with retry mechanism for 503 errors"""
+    """Enhanced Gemini API call with better error handling"""
     if not GEMINI_API_KEY:
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY environment variable not set")
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
 
-    headers = {
-        "Content-Type": "application/json"
-    }
+    headers = {"Content-Type": "application/json"}
 
     payload = {
         "contents": [{
-            "parts": [{
-                "text": prompt
-            }]
+            "parts": [{"text": prompt}]
         }],
         "generationConfig": {
-            "temperature": 0.1,
-            "topK": 40,
-            "topP": 0.95,
+            "temperature": 0.05,  # Lower temperature for more consistent answers
+            "topK": 20,
+            "topP": 0.8,
             "maxOutputTokens": 1024,
         }
     }
@@ -404,66 +438,79 @@ async def call_gemini_api_with_retry(prompt: str, max_retries: int = 3) -> str:
             await rate_limiter.acquire()
             print(f"🤖 Making Gemini API call... (attempt {attempt + 1})")
 
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(timeout=45) as client:
                 response = await client.post(url, headers=headers, json=payload)
 
                 if response.status_code == 503:
-                    wait_time = (attempt + 1) * 2  # Exponential backoff
-                    print(f"❌ Gemini API request failed: Server error '503 Service Unavailable'")
+                    wait_time = (attempt + 1) * 3
+                    print(f"❌ Service unavailable (503)")
                     if attempt < max_retries - 1:
                         print(f"⏰ Retrying in {wait_time} seconds...")
                         await asyncio.sleep(wait_time)
                         continue
                     else:
-                        return "I apologize, but the service is temporarily unavailable. Please try again later."
+                        return "Service temporarily unavailable. Please try again later."
 
                 response.raise_for_status()
                 result = response.json()
 
                 if 'candidates' in result and len(result['candidates']) > 0:
                     content = result['candidates'][0]['content']['parts'][0]['text']
-                    print(f"✅ Received Gemini response: {len(content)} characters")
+                    print(f"✅ Received response: {len(content)} characters")
                     return content
                 else:
                     raise HTTPException(status_code=500, detail="Unexpected API response format")
 
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 503 and attempt < max_retries - 1:
-                wait_time = (attempt + 1) * 2
-                print(f"❌ Gemini API request failed: {e}")
-                print(f"⏰ Retrying in {wait_time} seconds...")
-                await asyncio.sleep(wait_time)
-                continue
-            else:
-                print(f"❌ Gemini API request failed: {e}")
-                return "I apologize, but I encountered an error while processing your request. Please try again."
-
         except Exception as e:
-            print(f"❌ Unexpected error: {e}")
+            print(f"❌ API call error: {e}")
             if attempt < max_retries - 1:
-                await asyncio.sleep(2)
+                await asyncio.sleep((attempt + 1) * 2)
                 continue
             else:
-                return "I apologize, but I encountered an unexpected error. Please try again."
+                return "I apologize, but I encountered an error processing your request. Please try again."
 
-    return "I apologize, but the service is currently unavailable after multiple attempts. Please try again later."
+    return "Service unavailable after multiple attempts. Please try again later."
+
+def create_enhanced_prompt(question: str, context: str) -> str:
+    """Create enhanced prompt optimized for insurance policies"""
+    return f"""You are an expert insurance policy analyst with deep knowledge of Indian insurance regulations and policy terms. 
+
+Analyze the following insurance policy context and answer the question with maximum accuracy.
+
+QUESTION: {question}
+
+POLICY CONTEXT:
+{context}
+
+INSTRUCTIONS:
+1. Answer based STRICTLY on the provided policy context
+2. Be precise with numbers, time periods, and conditions
+3. If the question asks for a definition, provide the exact definition from the policy
+4. Include relevant policy clauses or section references when available
+5. For waiting periods, grace periods, or time-related queries, specify the exact duration
+6. For coverage questions, mention any conditions, exclusions, or sub-limits
+7. If the context doesn't contain the specific information, state: "This information is not available in the provided policy context."
+8. Do not make assumptions or add information not explicitly stated in the context
+
+ANSWER:"""
 
 @app.get("/")
 async def root():
     return {
-        "message": "Insurance Claims Processing API - Fixed",
-        "version": "3.0.0",
+        "message": "Enhanced Insurance Policy Q&A API",
+        "version": "4.0.0",
         "model": "gemini-2.0-flash",
         "provider": "Google Gemini",
-        "status": "fixed",
+        "status": "enhanced",
+        "target_accuracy": "80%+",
         "gemini_api_configured": bool(GEMINI_API_KEY),
-        "improvements": [
-            "Proper Gemini API integration",
-            "Retry mechanism for 503 errors",
-            "Multi-pass chunk retrieval",
-            "Enhanced keyword extraction",
-            "Better error handling",
-            "Improved context selection"
+        "enhancements": [
+            "Domain-specific chunking and keyword extraction",
+            "Advanced semantic scoring with insurance context",
+            "Intelligent chunk type classification",
+            "Enhanced PDF text processing",
+            "Optimized prompting for policy documents",
+            "Multi-document context fusion"
         ]
     }
 
@@ -472,68 +519,73 @@ async def document_qa(
     req: QARequest,
     token: str = Depends(verify_bearer_token)
 ):
-    """Fixed Document Q&A with proper Gemini integration"""
+    """Enhanced Document Q&A with 80%+ accuracy target"""
     start_time = time.time()
 
     try:
-        print(f"🚀 Processing {len(req.questions)} questions with comprehensive multi-pass retrieval")
+        print(f"🚀 Processing {len(req.questions)} questions with enhanced system")
         print(f"📄 Documents to process: {len(req.documents)}")
 
-        # Step 1: Extract PDF text from all documents
-        all_text = ""
+        # Initialize domain processor and retriever
+        processor = InsuranceDomainProcessor()
+        retriever = AdvancedRetriever(processor)
+
+        # Step 1: Extract and process all documents
+        all_chunks = []
+        all_keywords = defaultdict(list)
+
         for i, doc_url in enumerate(req.documents, 1):
             print(f"📄 Processing document {i}/{len(req.documents)}")
+
+            # Extract text
             text = await extract_pdf_from_url_fast(doc_url)
-            all_text += f"\n\n--- Document {i} ---\n\n" + text
 
-        # Step 2: Extract comprehensive keywords
-        keywords = extract_comprehensive_keywords(all_text)
+            # Extract domain keywords
+            doc_keywords = processor.extract_domain_keywords(text)
+            for category, keywords in doc_keywords.items():
+                all_keywords[category].extend(keywords)
 
-        # Step 3: Create comprehensive chunks
-        chunks = create_comprehensive_chunks(all_text, chunk_size=1200, overlap=200)
+            # Create intelligent chunks
+            doc_chunks = processor.create_intelligent_chunks(text)
+            all_chunks.extend(doc_chunks)
 
-        # Step 4: Process each question individually with multi-pass retrieval
+        print(f"📊 Total chunks created: {len(all_chunks)}")
+        print(f"📊 Keyword categories: {list(all_keywords.keys())}")
+
+        # Step 2: Process each question with enhanced retrieval
         answers = []
         for i, question in enumerate(req.questions, 1):
-            print(f"🔍 Processing question {i}/{len(req.questions)}: {question[:60]}...")
+            print(f"\n🔍 Processing question {i}/{len(req.questions)}: {question[:60]}...")
 
             try:
-                # Multi-pass chunk retrieval
-                relevant_chunks = multi_pass_chunk_retrieval(question, chunks, keywords)
+                # Retrieve best chunks for this question
+                relevant_chunks = retriever.retrieve_best_chunks(
+                    question, all_chunks, all_keywords, top_k=6
+                )
 
                 # Create context from relevant chunks
-                context = "\n\n".join(relevant_chunks[:5])  # Use top 5 chunks
+                context = "\n\n--- POLICY SECTION ---\n\n".join(relevant_chunks[:4])
 
-                # Create focused prompt
-                prompt = f"""You are a professional insurance policy analyst. Answer the following question based ONLY on the provided policy document context.
+                # Limit context size to avoid token limits
+                if len(context) > 8000:
+                    context = context[:8000] + "\n\n[Context truncated for length]"
 
-Question: {question}
-
-Policy Context:
-{context}
-
-Instructions:
-- Answer based strictly on the provided context
-- Be precise and specific
-- Include relevant details like time periods, amounts, conditions
-- If the context doesn't contain the answer, respond: "The provided context does not contain this information."
-- Do not make assumptions or add information not in the context
-
-Answer:"""
+                # Create enhanced prompt
+                prompt = create_enhanced_prompt(question, context)
 
                 # Get answer from Gemini
                 answer = await call_gemini_api_with_retry(prompt)
                 answers.append(answer.strip())
 
-                # Rate limiting delay
-                #await asyncio.sleep(3)
+                print(f"✅ Question {i} processed successfully")
 
             except Exception as e:
                 print(f"❌ Error processing question {i}: {e}")
                 answers.append("I apologize, but I encountered an error processing this question. Please try again.")
 
         elapsed_time = time.time() - start_time
-        print(f"✅ Comprehensive processing completed in {elapsed_time:.2f} seconds")
+        print(f"\n✅ Enhanced processing completed in {elapsed_time:.2f} seconds")
+        print(f"🎯 Target accuracy: 80%+ (vs previous 35%)")
 
         return {"answers": answers}
 
@@ -543,13 +595,15 @@ Answer:"""
         raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}")
 
 if __name__ == "__main__":
-    print("🚀 Starting Fixed Insurance Claims Processing API...")
-    print("🔧 Key fixes:")
-    print("  - Proper Gemini API integration with retry mechanism")
-    print("  - Multi-pass chunk retrieval for better accuracy")
-    print("  - Enhanced keyword extraction and matching")
-    print("  - Robust error handling for 503 errors")
-    print("  - Improved context selection and processing")
+    print("🚀 Starting Enhanced Insurance Policy Q&A API...")
+    print("🎯 Target Accuracy: 80%+ (significant improvement from 35%)")
+    print("🔧 Key Enhancements:")
+    print("  - Domain-specific chunking and keyword extraction")
+    print("  - Advanced semantic scoring with insurance context")
+    print("  - Intelligent chunk type classification")
+    print("  - Enhanced PDF text processing")
+    print("  - Optimized prompting for policy documents")
+    print("  - Multi-document context fusion")
     print(f"🔑 Gemini API Key configured: {bool(GEMINI_API_KEY)}")
 
     if not GEMINI_API_KEY:
