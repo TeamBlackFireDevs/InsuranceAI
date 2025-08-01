@@ -1,12 +1,7 @@
 """
-Enhanced Insurance Policy Q&A System
+Enhanced Insurance Policy Q&A System - PyPDF2 Version
 Designed for 80%+ accuracy on insurance policy queries
-Key improvements:
-1. Domain-specific chunking and keyword extraction
-2. Advanced semantic scoring with insurance context
-3. Optimized prompting for policy documents
-4. Robust error handling and rate limiting
-5. Multi-document context fusion
+Vercel-compatible version using PyPDF2 instead of PyMuPDF
 """
 
 from fastapi import FastAPI, HTTPException, Depends
@@ -20,17 +15,17 @@ from typing import List, Union, Dict, Tuple
 import uvicorn
 import traceback
 import re
-import fitz  # PyMuPDF
+import PyPDF2
+import io
 import httpx
 from dotenv import load_dotenv
 from collections import defaultdict
-import json
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="Enhanced Insurance Policy Q&A API",
+    title="Enhanced Insurance Policy Q&A API - PyPDF2",
     description="High-accuracy insurance policy analysis with 80%+ accuracy target",
-    version="4.0.0"
+    version="4.1.0"
 )
 
 load_dotenv()
@@ -87,7 +82,7 @@ def verify_bearer_token(credentials: HTTPAuthorizationCredentials = Depends(secu
     )
 
 async def extract_pdf_from_url_fast(url: str) -> str:
-    """Enhanced PDF extraction with better text processing"""
+    """Enhanced PDF extraction using PyPDF2 (Vercel compatible)"""
     try:
         print(f"📄 Downloading PDF from: {url[:80]}...")
 
@@ -98,40 +93,24 @@ async def extract_pdf_from_url_fast(url: str) -> str:
         pdf_size = len(response.content)
         print(f"📖 Extracting text from PDF ({pdf_size} bytes)...")
 
-        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
-            temp_file.write(response.content)
-            temp_path = temp_file.name
+        # Use PyPDF2 for extraction
+        pdf_file = io.BytesIO(response.content)
+        pdf_reader = PyPDF2.PdfReader(pdf_file)
 
-        try:
-            doc = fitz.open(temp_path)
-            text_pages = []
-
-            for page_num in range(len(doc)):
-                page = doc[page_num]
-                # Enhanced text extraction with better formatting
-                text = page.get_text()
-
-                # Clean up common PDF artifacts
-                text = re.sub(r'\n+', '\n', text)
-                text = re.sub(r'\s+', ' ', text)
-                text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\xff]', '', text)
-
+        text_pages = []
+        for page_num in range(len(pdf_reader.pages)):
+            page = pdf_reader.pages[page_num]
+            text = page.extract_text()
+            if text.strip():  # Only add non-empty pages
                 text_pages.append(text)
 
-            doc.close()
-            full_text = "\n".join(text_pages)
+        full_text = "\n".join(text_pages)
 
-            # Post-process the text
-            full_text = clean_extracted_text(full_text)
+        # Post-process the text
+        full_text = clean_extracted_text(full_text)
 
-            print(f"✅ Extracted {len(full_text)} characters from {len(text_pages)} pages")
-            return full_text
-
-        finally:
-            try:
-                os.unlink(temp_path)
-            except:
-                pass
+        print(f"✅ Extracted {len(full_text)} characters from {len(text_pages)} pages")
+        return full_text
 
     except Exception as e:
         print(f"❌ PDF extraction error: {str(e)}")
@@ -497,14 +476,16 @@ ANSWER:"""
 @app.get("/")
 async def root():
     return {
-        "message": "Enhanced Insurance Policy Q&A API",
-        "version": "4.0.0",
+        "message": "Enhanced Insurance Policy Q&A API - PyPDF2 Version",
+        "version": "4.1.0",
         "model": "gemini-2.0-flash",
         "provider": "Google Gemini",
-        "status": "enhanced",
+        "pdf_library": "PyPDF2",
+        "status": "vercel-optimized",
         "target_accuracy": "80%+",
         "gemini_api_configured": bool(GEMINI_API_KEY),
         "enhancements": [
+            "PyPDF2 for Vercel compatibility",
             "Domain-specific chunking and keyword extraction",
             "Advanced semantic scoring with insurance context",
             "Intelligent chunk type classification",
@@ -519,11 +500,11 @@ async def document_qa(
     req: QARequest,
     token: str = Depends(verify_bearer_token)
 ):
-    """Enhanced Document Q&A with 80%+ accuracy target"""
+    """Enhanced Document Q&A with 80%+ accuracy target - PyPDF2 Version"""
     start_time = time.time()
 
     try:
-        print(f"🚀 Processing {len(req.questions)} questions with enhanced system")
+        print(f"🚀 Processing {len(req.questions)} questions with enhanced PyPDF2 system")
         print(f"📄 Documents to process: {len(req.documents)}")
 
         # Initialize domain processor and retriever
@@ -584,7 +565,7 @@ async def document_qa(
                 answers.append("I apologize, but I encountered an error processing this question. Please try again.")
 
         elapsed_time = time.time() - start_time
-        print(f"\n✅ Enhanced processing completed in {elapsed_time:.2f} seconds")
+        print(f"\n✅ Enhanced PyPDF2 processing completed in {elapsed_time:.2f} seconds")
         print(f"🎯 Target accuracy: 80%+ (vs previous 35%)")
 
         return {"answers": answers}
@@ -595,9 +576,11 @@ async def document_qa(
         raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}")
 
 if __name__ == "__main__":
-    print("🚀 Starting Enhanced Insurance Policy Q&A API...")
+    print("🚀 Starting Enhanced Insurance Policy Q&A API - PyPDF2 Version...")
     print("🎯 Target Accuracy: 80%+ (significant improvement from 35%)")
+    print("📚 PDF Library: PyPDF2 (Vercel optimized)")
     print("🔧 Key Enhancements:")
+    print("  - PyPDF2 for better Vercel compatibility")
     print("  - Domain-specific chunking and keyword extraction")
     print("  - Advanced semantic scoring with insurance context")
     print("  - Intelligent chunk type classification")

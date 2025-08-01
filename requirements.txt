@@ -1,7 +1,6 @@
 fastapi
 uvicorn
 pydantic
-pymupdf
 python-dotenv
 httpx
-
+PyPDF2
