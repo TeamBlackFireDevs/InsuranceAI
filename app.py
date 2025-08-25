@@ -78,9 +78,7 @@ def call_openai_api(prompt, max_retries=3):
                 messages=[{"role": "user", "content": prompt}],  
                 temperature=0.02,  
                 top_p=0.6,  
-                max_tokens=350,  
-                n=1,  
-                stop=None
+                max_tokens=350
             )  
             if response.choices and len(response.choices) > 0:  
                 return response.choices[0].message.content  
