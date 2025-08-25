@@ -1,3 +1,14 @@
+---
+title: InsuranceAI
+emoji: 📚
+colorFrom: pink
+colorTo: red
+sdk: docker
+pinned: false
+license: mit
+short_description: Insurance Policy Document Analyzer with QA.
+---
+
 # InsuranceAI 📚
 
 Live Demo: https://arjunisdark-insuranceai.hf.space/
@@ -20,13 +31,3 @@ It leverages the **Gemini 2.5 Flash API**, making it fast and efficient.
 - Provide actionable recommendations
 - Lightweight and efficient with Docker SDK
 
----
-title: InsuranceAI
-emoji: 📚
-colorFrom: pink
-colorTo: red
-sdk: docker
-pinned: false
-license: mit
-short_description: Insurance Policy Document Analyzer with QA.
----
