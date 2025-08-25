@@ -109,7 +109,7 @@ export default function App() {
       <motion.div
         initial={{ opacity: 0, y: 40 }}
         animate={{ opacity: 1, y: 0 }}
-        className="bg-white dark:bg-gray-900 p-6 rounded-2xl shadow-xl w-[500px] md:w-[800px] min-h-[500px] flex flex-col gap-4"
+        className="bg-white dark:bg-gray-900 p-6 rounded-2xl shadow-xl w-[500px] flex flex-col gap-4"
       >
         <h1 className="text-2xl font-bold text-center">InsuranceAI</h1>
 
