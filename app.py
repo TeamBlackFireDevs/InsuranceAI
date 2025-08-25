@@ -25,7 +25,7 @@ import threading
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__, static_folder="frontend/build", template_folder="frontend/build")
+app = Flask(__name__, static_folder="build/static", template_folder="build")
 
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 

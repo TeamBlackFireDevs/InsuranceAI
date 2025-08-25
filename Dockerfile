@@ -24,8 +24,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # copy backend code
 COPY . .
 
-# copy built frontend into Flask static folder
-COPY --from=frontend-builder /frontend/build /code/frontend/build
+# copy built frontend into Flask static + templates
+COPY --from=frontend-builder /frontend/build /code/build
 
 EXPOSE 7860
 
