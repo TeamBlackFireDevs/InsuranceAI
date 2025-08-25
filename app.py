@@ -455,7 +455,7 @@ def health_check():
 def index():
     return render_template("index.html")   # serves React app
 
-UPLOAD_FOLDER = "uploads"
+UPLOAD_FOLDER = "/tmp/uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 @app.route("/upload", methods=["POST"])
