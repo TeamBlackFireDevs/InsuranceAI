@@ -2,6 +2,8 @@ import React, { useState } from "react";
 import { motion } from "framer-motion";
 import { Moon, Sun, Maximize } from "lucide-react";
 
+const API_URL = process.env.REACT_APP_API_URL;
+
 export default function App() {
   const [darkMode, setDarkMode] = useState(false);
   const [document, setDocument] = useState(null);
@@ -36,14 +38,14 @@ export default function App() {
       const formData = new FormData();
       formData.append("file", document);
 
-      const uploadRes = await fetch("https://arjunisdark-insuranceai.hf.space/upload", {
+      const uploadRes = await fetch(`${API_URL}/upload`, {
         method: "POST",
         body: formData,
       });
       const { url } = await uploadRes.json();
 
       // step 2: send question + file url to API
-      const res = await fetch("https://arjunisdark-insuranceai.hf.space/api/v1/hackrx/run", {
+      const res = await fetch(`${API_URL}/api/v1/hackrx/run`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
