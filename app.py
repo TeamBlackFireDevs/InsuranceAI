@@ -29,7 +29,7 @@ app = Flask(__name__)
 
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
-client = OpenAI(api_key=GEMINI_API_KEY)
+client = OpenAI(api_key=GEMINI_API_KEY, base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
 
 try:
     embedder = SentenceTransformer('all-MiniLM-L6-v2')
