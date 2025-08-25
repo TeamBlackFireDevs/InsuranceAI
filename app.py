@@ -11,7 +11,7 @@ import mimetypes
 from docx import Document
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template, send_from_directory
 import pdfplumber
 import io
 import re
@@ -25,7 +25,7 @@ import threading
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder="frontend/build", template_folder="frontend/build")
 
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
@@ -450,6 +450,15 @@ def health_check():
             'threadpool_parallelism'
         ]
     })
+
+@app.route("/")
+def index():
+    return render_template("index.html")   # serves React app
+
+# To serve static files (JS, CSS, etc.)
+@app.route('/<path:path>')
+def static_proxy(path):
+    return send_from_directory(app.static_folder, path)
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 7860))
