@@ -455,10 +455,28 @@ def health_check():
 def index():
     return render_template("index.html")   # serves React app
 
-# To serve static files (JS, CSS, etc.)
-@app.route('/<path:path>')
-def static_proxy(path):
-    return send_from_directory(app.static_folder, path)
+UPLOAD_FOLDER = "uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+@app.route("/upload", methods=["POST"])
+def upload_file():
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+    
+    file = request.files["file"]
+    if file.filename == "":
+        return jsonify({"error": "Empty filename"}), 400
+
+    filepath = os.path.join(UPLOAD_FOLDER, file.filename)
+    file.save(filepath)
+
+    file_url = request.host_url + "uploads/" + file.filename
+    return jsonify({"url": file_url})
+
+@app.route("/uploads/<path:filename>")
+def uploaded_file(filename):
+    return send_from_directory(UPLOAD_FOLDER, filename)
+
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 7860))

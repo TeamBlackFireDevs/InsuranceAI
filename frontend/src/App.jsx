@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { Moon, Sun, Maximize } from "lucide-react";
 
@@ -6,28 +6,37 @@ const API_URL = process.env.REACT_APP_API_URL;
 
 export default function App() {
   const [darkMode, setDarkMode] = useState(false);
-  const [document, setDocument] = useState(null);
+  const [uploadedFile, setUploadedFile] = useState(null);
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState("");
   const [loading, setLoading] = useState(false);
 
+  //darkmode toggle
+  useEffect(() => {
+    if (darkMode) {
+      document.documentElement.classList.add("dark");
+    } else {
+      document.documentElement.classList.remove("dark");
+    }
+  }, [darkMode]);
+
   // toggle fullscreen
   const toggleFullscreen = () => {
-    if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen();
+    if (!window.document.fullscreenElement) {
+      window.document.documentElement.requestFullscreen();
     } else {
-      document.exitFullscreen();
+      window.document.exitFullscreen();
     }
   };
 
   // handle file upload
   const handleFileUpload = (e) => {
-    setDocument(e.target.files[0]);
+    setUploadedFile(e.target.files[0]);
   };
 
   // send request to backend
   const handleSubmit = async () => {
-    if (!document || !question) {
+    if (!uploadedFile || !question) {
       alert("Please upload a document and enter a question!");
       return;
     }
@@ -36,7 +45,7 @@ export default function App() {
     try {
       // step 1: upload file to backend
       const formData = new FormData();
-      formData.append("file", document);
+      formData.append("file", uploadedFile);
 
       const uploadRes = await fetch(`${API_URL}/upload`, {
         method: "POST",
@@ -67,7 +76,7 @@ export default function App() {
   };
 
   return (
-    <div className={`${darkMode ? "bg-gray-900 text-white" : "bg-gray-100 text-black"} min-h-screen flex flex-col items-center justify-center`}>
+    <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 text-gray-900 dark:bg-neutral-950 dark:text-gray-100">
       {/* Controls */}
       <div className="absolute top-4 right-4 flex gap-3">
         <button onClick={() => setDarkMode(!darkMode)}>
@@ -80,7 +89,7 @@ export default function App() {
       <motion.div
         initial={{ opacity: 0, y: 40 }}
         animate={{ opacity: 1, y: 0 }}
-        className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-lg w-[500px] flex flex-col gap-4"
+        className="bg-white dark:bg-gray-900 p-6 rounded-2xl shadow-xl w-[500px] flex flex-col gap-4"
       >
         <h1 className="text-2xl font-bold text-center">InsuranceAI</h1>
 
@@ -90,13 +99,13 @@ export default function App() {
           placeholder="Enter your question..."
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
-          className="p-2 border rounded w-full"
+          className="w-full p-2 border rounded-xl bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-700"
         />
 
         <button
           onClick={handleSubmit}
           disabled={loading}
-          className="bg-blue-600 text-white py-2 rounded-xl hover:bg-blue-700"
+          className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl shadow"
         >
           {loading ? "Processing..." : "Submit"}
         </button>
