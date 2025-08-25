@@ -113,7 +113,7 @@ export default function App() {
       >
         <h1 className="text-2xl font-bold text-center">InsuranceAI</h1>
 
-        <input type="file" accept=".pdf,.docx" onChange={handleFileUpload} className="p-2 border rounded mx-auto" />
+        <input type="file" accept=".pdf,.docx" onChange={handleFileUpload} className="p-2 border rounded" />
 
         {/* Add question */}
         <div className="flex gap-2">
