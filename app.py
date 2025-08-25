@@ -27,10 +27,9 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-HF_API_URL = "https://router.huggingface.co/v1/chat/completions"
-HF_API_KEY = os.environ.get("HF_TOKEN")
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
-#client = OpenAI(api_key=OPENAI_API_KEY)
+client = OpenAI(api_key=GEMINI_API_KEY)
 
 try:
     embedder = SentenceTransformer('all-MiniLM-L6-v2')
@@ -71,37 +70,30 @@ QUERY_SPECIFIC_PATTERNS = {
     ]
 }
 
-def call_huggingface_api(prompt, max_retries=3):
-    headers = {
-        "Authorization": f"Bearer {HF_API_KEY}",
-        "Content-Type": "application/json"
-    }
-
-    payload = {
-        "model": "Qwen/Qwen3-Coder-30B-A3B-Instruct:fireworks-ai",
-        "messages": [
-            {"role": "user", "content": prompt}
-        ],
-        "temperature": 0.02,
-        "top_p": 0.6,
-        "max_tokens": 350
-    }
-
-    for attempt in range(max_retries):
-        try:
-            response = requests.post(HF_API_URL, headers=headers, json=payload, timeout=30)
-            response.raise_for_status()
-            result = response.json()
-            if result.get("choices") and len(result["choices"]) > 0:
-                return result["choices"][0]["message"]["content"]
-            else:
-                logging.warning("No response generated from HF API")
-                return "No response generated"
-        except Exception as e:
-            logging.warning(f"Hugging Face API error (attempt {attempt + 1}): {e}")
-            time.sleep(2 ** attempt)
-
-    return "Error: Hugging Face API request failed after retries"
+def call_openai_api(prompt, max_retries=3):  
+    for attempt in range(max_retries):  
+        try:  
+            response = client.chat.completions.create(  
+                model="gemini-2.5-flash",  
+                messages=[{"role": "user", "content": prompt}],  
+                temperature=0.02,  
+                top_p=0.6,  
+                max_tokens=350,  
+                n=1,  
+                stop=None
+            )  
+            if response.choices and len(response.choices) > 0:  
+                return response.choices[0].message.content  
+            else:  
+                logging.warning("No response generated from OpenAI API")  
+                return "No response generated"  
+        except openai.APIError as e:  
+            logging.warning(f"OpenAI API request failed on attempt {attempt+1}: {e}")  
+            time.sleep(2 ** attempt)  # exponential backoff  
+        except Exception as e:  
+            logging.warning(f"Unexpected error on attempt {attempt+1}: {e}")  
+            time.sleep(2 ** attempt)  
+    return "Error: OpenAI API request failed after retries"
 
 def extract_text_from_pdf(pdf_content):  
     try:  
@@ -449,7 +441,7 @@ def health_check():
     return jsonify({
         'status': 'healthy',
         'embedder_loaded': embedder is not None,
-        'llm_api_configured': OPENAI_API_KEY is not None,
+        'llm_api_configured': GEMINI_API_KEY is not None,
         'version': '3.0_aggressive_optimized',
         'features': [
             'embedding_caching',
