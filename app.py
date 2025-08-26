@@ -120,28 +120,23 @@ def extract_text_from_docx(docx_content):
         logger.error(f"Error extracting text from DOCX: {e}")  
         return ""
 
-def optimized_chunk_text(text, chunk_size=3000, overlap=300):
-    if not text:
-        return []
-
+def optimized_chunk_text(text, chunk_size=1500, overlap=200):
+    """
+    Splits text into chunks of ~chunk_size with overlap.
+    Works even if PDF text has no clean paragraph breaks.
+    """
+    words = text.split()
     chunks = []
-    paragraphs = text.split('\n\n')
+    start = 0
+    while start < len(words):
+        end = min(start + chunk_size, len(words))
+        chunk = " ".join(words[start:end])
+        chunks.append(chunk)
+        start = end - overlap  # slide window with overlap
+        if start < 0:
+            start = 0
+    return chunks
 
-    current_chunk = ""
-    for paragraph in paragraphs:
-        if len(current_chunk) + len(paragraph) > chunk_size:
-            if current_chunk.strip():
-                chunks.append(current_chunk.strip())
-            words = current_chunk.split()
-            overlap_words = min(overlap // 10, len(words) // 3)
-            current_chunk = ' '.join(words[-overlap_words:]) + " " + paragraph if overlap_words > 0 else paragraph
-        else:
-            current_chunk += "\n\n" + paragraph if current_chunk else paragraph
-
-    if current_chunk.strip():
-        chunks.append(current_chunk.strip())
-
-    return [chunk for chunk in chunks if len(chunk.strip()) > 30]
 
 def get_query_type(query):
     q = (query or "").lower()
@@ -385,7 +380,7 @@ def analyze_document_json():
     logger.info(f"Extracted text in {time.time() - start_time:.2f}s, length: {len(text)} chars")
 
     start_time = time.time()
-    chunks = optimized_chunk_text(text, chunk_size=3000, overlap=300)
+    chunks = optimized_chunk_text(text, chunk_size=1500, overlap=200)
     if not chunks:
         return jsonify({'error': 'Could not create text chunks'}), 400
     logger.info(f"Created {len(chunks)} chunks for processing in {time.time() - start_time:.2f}s")
