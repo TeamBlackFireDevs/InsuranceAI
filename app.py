@@ -67,13 +67,10 @@ QUERY_SPECIFIC_PATTERNS = {
     ],
     "room_rent": [
         "room rent", "ICU charges", "percentage of sum insured", "1% of sum insured"
-    ],
-    "grace_period": [
-        "grace period means", "grace period for payment"
     ]
 }
 
-def call_openai_api(prompt, max_retries=3, max_tokens=350):  
+def call_openai_api(prompt, max_retries=3):  
     for attempt in range(max_retries):  
         try:  
             response = client.chat.completions.create(  
@@ -81,7 +78,7 @@ def call_openai_api(prompt, max_retries=3, max_tokens=350):
                 messages=[{"role": "user", "content": prompt}],  
                 temperature=0.02,  
                 top_p=0.6,  
-                max_tokens=max_tokens
+                max_tokens=350
             )  
             if response.choices and len(response.choices) > 0:  
                 return response.choices[0].message.content  
@@ -120,56 +117,41 @@ def extract_text_from_docx(docx_content):
         logger.error(f"Error extracting text from DOCX: {e}")  
         return ""
 
-def optimized_chunk_text(text, chunk_size=1500, overlap=200):
-    """
-    Splits text into chunks of ~chunk_size with overlap.
-    Works even if PDF text has no clean paragraph breaks.
-    """
-    words = text.split()
-    chunks = []
-    start = 0
-    while start < len(words):
-        end = min(start + chunk_size, len(words))
-        chunk = " ".join(words[start:end])
-        chunks.append(chunk)
-        start = end - overlap  # slide window with overlap
-        if start < 0:
-            start = 0
-    return chunks
+def optimized_chunk_text(text, chunk_size=3000, overlap=300):
+    if not text:
+        return []
 
+    chunks = []
+    paragraphs = text.split('\n\n')
+
+    current_chunk = ""
+    for paragraph in paragraphs:
+        if len(current_chunk) + len(paragraph) > chunk_size:
+            if current_chunk.strip():
+                chunks.append(current_chunk.strip())
+            words = current_chunk.split()
+            overlap_words = min(overlap // 10, len(words) // 3)
+            current_chunk = ' '.join(words[-overlap_words:]) + " " + paragraph if overlap_words > 0 else paragraph
+        else:
+            current_chunk += "\n\n" + paragraph if current_chunk else paragraph
+
+    if current_chunk.strip():
+        chunks.append(current_chunk.strip())
+
+    return [chunk for chunk in chunks if len(chunk.strip()) > 30]
 
 def get_query_type(query):
-    q = (query or "").lower()
-    # Advice/opinion triggers
-    if any(t in q for t in [
-        "is this policy good", "is this good", "is it good", "worth", "worth it",
-        "should i buy", "recommend", "recommendation", "advice", "pros", "cons",
-        "compare", "better", "suitable", "fit for me"
-    ]):
-        return "advice"
-    # Specific factual categories
-    if "grace period" in q:
-        return "grace_period"
-    if "hospital" in q and ("definition" in q or "define" in q or "means" in q):
+    query_lower = query.lower()
+    if "hospital" in query_lower and ("definition" in query_lower or "define" in query_lower or "means" in query_lower):
         return "hospital_definition"
-    elif "waiting period" in q:
+    elif "waiting period" in query_lower:
         return "waiting_periods"
-    elif any(term in q for term in ["room rent", "icu", "charges"]):
+    elif any(term in query_lower for term in ["room rent", "icu", "charges"]):
         return "room_rent"
-    elif "maternity" in q:
+    elif "maternity" in query_lower:
         return "maternity"
     else:
         return "general"
-
-    
-def normalize_query(query: str) -> str:
-    q = (query or "").strip()
-    if not q:
-        return q
-    # Expand 1–2 word queries into a question
-    if len(q.split()) <= 2:
-        return f"What does the policy say about {q}?"
-    return q
 
 def prefilter_chunks_by_keywords(chunks, query):
     # Quick filter: keep chunks containing any keyword from query or training patterns
@@ -270,61 +252,18 @@ QUESTION:
 
 Answer:"""
 
-def create_advice_prompt(user_question, relevant_chunks):
-    """
-    Produces a two-part response:
-    1) Answer: strictly from policy content in the provided context.
-    2) Advisor Note: practical guidance based on (1), using general good practice, but do NOT invent policy facts.
-    """
-    base = (
-        "You are an insurance advisor. Use only the POLICY CONTENT for facts.\n\n"
-        "Write the answer in two parts:\n"
-        "Answer: (1–3 sentences, factual, numbers/limits as stated)\n"
-        "Advisor Note: (1–3 sentences, practical guidance or implications for a buyer; "
-        "do not add policy facts not present in content; keep it neutral and non-salesy)\n\n"
-        "If the content does not contain the requested facts, say exactly: "
-        "\"Information not available in the policy.\" for the Answer part, and keep Advisor Note generic and brief.\n"
-    )
-    context_text = "\n\n".join([chunk['text'] for chunk in relevant_chunks[:8]])
-    return f"""{base}
-POLICY CONTENT:
-{context_text}
-
-USER QUESTION:
-{user_question}
-
-Now write:
-Answer:
-Advisor Note:"""
-
-
 def clean_answer_optimized(answer, query):
-    if answer is None or not isinstance(answer, str):
-        return "Information not available in the policy."
     answer = answer.strip()
-    if not answer:
-        return "Information not available in the policy."
-
-    # Flatten whitespace
     answer = re.sub(r'\n+', ' ', answer)
-    answer = re.sub(r'\s+', ' ', answer).strip()
+    answer = re.sub(r'\s+', ' ', answer)
 
-    # Normalize common fallback phrasings to your standard
-    FALLBACKS = [
-        "This information is not available in the provided policy document",
-        "Information not available in the policy",
-        "Information not available in the policy."
-    ]
-    for fb in FALLBACKS:
-        if fb.lower() in answer.lower() and len(answer) > len(fb) + 50:
-            # If the model added a long preface before fallback, keep the preface
-            before = answer.lower().split(fb.lower())[0].strip()
-            if len(before) > 50:
-                return before
-            return "Information not available in the policy."
+    if "This information is not available in the provided policy document" in answer:
+        content_before = answer.split("This information is not available")[0].strip()
+        if len(content_before) > 50:
+            answer = content_before
+            logger.info("Removed fallback message as content was found")
 
     return answer
-
 
 AUTH_TOKEN = "36ef8e0c602e88f944e5475c5ecbe62ecca6aef1702bb1a6f70854a3b7993ed5"
 
@@ -380,7 +319,7 @@ def analyze_document_json():
     logger.info(f"Extracted text in {time.time() - start_time:.2f}s, length: {len(text)} chars")
 
     start_time = time.time()
-    chunks = optimized_chunk_text(text, chunk_size=1500, overlap=200)
+    chunks = optimized_chunk_text(text, chunk_size=3000, overlap=300)
     if not chunks:
         return jsonify({'error': 'Could not create text chunks'}), 400
     logger.info(f"Created {len(chunks)} chunks for processing in {time.time() - start_time:.2f}s")
@@ -401,37 +340,24 @@ def analyze_document_json():
     def process_query(query):
         try:
             start = time.time()
-
-            original_query = query
-            normalized = normalize_query(original_query)
-            query_type = get_query_type(original_query)
-
             # Pre-filter chunks by keywords to reduce search space
-            filtered_chunks = prefilter_chunks_by_keywords(chunks, normalized)
-
-            # Use cached embeddings for filtered chunks (map once to avoid O(n^2) .index lookups)
-            chunk_to_idx = {c: i for i, c in enumerate(chunks)}
-            indices = [chunk_to_idx.get(c) for c in filtered_chunks]
-            indices = [i for i in indices if i is not None]
+            filtered_chunks = prefilter_chunks_by_keywords(chunks, query)
+            # Use cached embeddings for filtered chunks
+            indices = [chunks.index(c) for c in filtered_chunks]
             filtered_embeddings = cached_embeddings[indices]
-
-            # Embed normalized query (more robust for short queries)
-            query_embedding = embedder.encode([normalized])
+            query_embedding = embedder.encode([query])
             similarities = cosine_similarity(query_embedding, filtered_embeddings)[0]
 
-            # Score and select top 5 chunks (same signal mixing as your current code)
+            # Score and select top 5 chunks
             scored_chunks = []
-            query_words = set(normalized.lower().split())
-            query_lower = normalized.lower()
-
-            combined_scores = []
+            query_words = set(query.lower().split())
+            query_lower = query.lower()
+            query_type = get_query_type(query)
             for i, chunk in enumerate(filtered_chunks):
                 chunk_lower = chunk.lower()
                 chunk_words = set(chunk_lower.split())
-
                 keyword_overlap = len(query_words.intersection(chunk_words))
                 keyword_score = keyword_overlap / len(query_words) if query_words else 0
-
                 numerical_score = 0
                 for num_term in TRAINING_PATTERNS["numerical_terms"]:
                     if num_term.lower() in chunk_lower:
@@ -439,58 +365,44 @@ def analyze_document_json():
                     if num_term.lower() in query_lower:
                         numerical_score += 0.2
                         break
-
                 specific_score = 0
-                qt = query_type
-                if qt in QUERY_SPECIFIC_PATTERNS:
-                    for pattern in QUERY_SPECIFIC_PATTERNS[qt]:
+                if query_type in QUERY_SPECIFIC_PATTERNS:
+                    for pattern in QUERY_SPECIFIC_PATTERNS[query_type]:
                         if pattern.lower() in chunk_lower:
                             specific_score += 0.4
                             break
-
                 if query_type == "hospital_definition":
                     if "hospital means" in chunk_lower or "minimum criteria" in chunk_lower:
                         specific_score += 0.5
                     combined_score = similarities[i] * 0.3 + keyword_score * 0.2 + specific_score * 0.5
                 else:
                     combined_score = similarities[i] * 0.5 + keyword_score * 0.3 + numerical_score * 0.1 + specific_score * 0.1
-
                 scored_chunks.append((chunk, combined_score))
-
             scored_chunks.sort(key=lambda x: x[1], reverse=True)
-            top_chunks = [{'text': c[0], 'score': float(c[1])} for c in scored_chunks[:5] if c[1] > 0.05]
+            top_chunks = [{'text': c[0], 'score': c[1]} for c in scored_chunks[:5]]
 
             if not top_chunks:
                 return {
-                    'query': original_query,
+                    'query': query,
                     'answer': 'Information not available in the policy.',
                     'confidence': 0.0,
                     'processing_time': time.time() - start
                 }
 
-            # ---- Prompt selection: advice vs factual ----
-            if query_type == "advice":
-                prompt = create_advice_prompt(original_query, top_chunks)
-                max_tokens = 500
-            else:
-                prompt = create_simple_direct_prompt(original_query, top_chunks)
-                max_tokens = 350
-
-            llm_start = time.time()
-            answer = call_openai_api(prompt, max_tokens=max_tokens)
-            logger.info(f"LLM API call completed in {time.time() - llm_start:.2f}s")
-
-            answer = clean_answer_optimized(answer, original_query)
-            avg_score = float(np.mean([c['score'] for c in top_chunks])) if top_chunks else 0.0
+            prompt = create_simple_direct_prompt(query, top_chunks)
+            start_time = time.time()
+            answer = call_openai_api(prompt)
+            logger.info(f"LLM API call completed in {time.time() - start_time:.2f}s")
+            answer = clean_answer_optimized(answer, query)
+            avg_score = np.mean([chunk['score'] for chunk in top_chunks])
             confidence = min(avg_score * 1.2, 1.0)
 
             return {
-                'query': original_query,
+                'query': query,
                 'answer': answer,
                 'confidence': confidence,
                 'processing_time': time.time() - start
             }
-
         except Exception as e:
             logger.error(f"Error processing query '{query}': {e}")
             return {
@@ -499,7 +411,6 @@ def analyze_document_json():
                 'confidence': 0.0,
                 'processing_time': 0
             }
-
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(process_query, q): q for q in queries}
