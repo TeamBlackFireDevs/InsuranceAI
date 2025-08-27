@@ -123,6 +123,12 @@ export default function App() {
             placeholder="Enter a question..."
             value={questionInput}
             onChange={(e) => setQuestionInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                handleAddQuestion();
+              }
+            }}
             className="flex-1 p-2 border rounded-xl bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-700"
           />
           <button
