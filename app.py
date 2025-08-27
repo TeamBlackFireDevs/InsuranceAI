@@ -70,15 +70,56 @@ QUERY_SPECIFIC_PATTERNS = {
     ]
 }
 
-def call_openai_api(prompt, max_retries=3):  
+# New patterns for advisory questions
+ADVISORY_PATTERNS = {
+    "recommendation_keywords": [
+        "good", "bad", "recommend", "suggestion", "advice", "should i", "worth it",
+        "better", "best", "compare", "opinion", "thoughts", "rate", "rating",
+        "pros", "cons", "advantages", "disadvantages", "suitable", "right for me"
+    ],
+    "evaluation_keywords": [
+        "evaluate", "assessment", "analysis", "review", "feedback", "judge",
+        "quality", "value", "benefit", "drawback", "limitation"
+    ]
+}
+
+def classify_query_type(query):
+    """Classify query as factual, advisory, or mixed"""
+    query_lower = query.lower()
+    
+    # Check for advisory patterns
+    advisory_score = 0
+    for keyword in ADVISORY_PATTERNS["recommendation_keywords"] + ADVISORY_PATTERNS["evaluation_keywords"]:
+        if keyword in query_lower:
+            advisory_score += 1
+    
+    # Check for factual patterns
+    factual_score = 0
+    factual_keywords = ["what", "when", "where", "how much", "define", "definition", "coverage", "limit", "exclude"]
+    for keyword in factual_keywords:
+        if keyword in query_lower:
+            factual_score += 1
+    
+    if advisory_score > factual_score:
+        return "advisory"
+    elif factual_score > advisory_score:
+        return "factual"
+    else:
+        return "mixed"
+
+def call_openai_api(prompt, max_retries=3, is_advisory=False):  
     for attempt in range(max_retries):  
         try:  
+            # Adjust parameters based on query type
+            temperature = 0.4 if is_advisory else 0.02
+            max_tokens = 500 if is_advisory else 350
+            
             response = client.chat.completions.create(  
                 model="gemini-2.5-flash",  
                 messages=[{"role": "user", "content": prompt}],  
-                temperature=0.02,  
-                top_p=0.6,  
-                max_tokens=350
+                temperature=temperature,  
+                top_p=0.7 if is_advisory else 0.6,  
+                max_tokens=max_tokens
             )  
             if response.choices and len(response.choices) > 0:  
                 return response.choices[0].message.content  
@@ -229,7 +270,8 @@ def fast_similarity_search(query, chunks, top_k=8):
         logger.error(f"Error in similarity search: {e}")
         return []
 
-def create_simple_direct_prompt(query, relevant_chunks):
+def create_factual_prompt(query, relevant_chunks):
+    """Create prompt for factual questions"""
     base_prompt = (
         "You are an expert insurance policy analyst. Answer the following question based ONLY on the provided policy content.\n\n"
         "Instructions:\n"
@@ -252,16 +294,73 @@ QUESTION:
 
 Answer:"""
 
+def create_advisory_prompt(query, relevant_chunks):
+    """Create prompt for advisory questions"""
+    base_prompt = (
+        "You are an expert insurance advisor with deep knowledge of insurance policies and industry best practices. "
+        "Based on the policy content provided, give helpful advice and recommendations.\n\n"
+        "Instructions:\n"
+        "- Provide practical, actionable advice based on the policy details\n"
+        "- Consider both the benefits and limitations mentioned in the policy\n"
+        "- Compare with general industry standards when relevant\n"
+        "- Be honest about any potential drawbacks or concerns\n"
+        "- Structure your response clearly with key points\n"
+        "- If the policy lacks certain information, mention what additional details would be helpful to know\n"
+        "- Provide balanced recommendations considering different user scenarios\n\n"
+    )
+
+    context_text = "\n\n".join([chunk['text'] for chunk in relevant_chunks[:10]])
+
+    return f"""{base_prompt}
+POLICY CONTENT:
+{context_text}
+
+QUESTION:
+{query}
+
+Please provide your professional assessment and recommendations:"""
+
+def create_mixed_prompt(query, relevant_chunks):
+    """Create prompt for mixed factual/advisory questions"""
+    base_prompt = (
+        "You are an expert insurance policy analyst and advisor. First provide the factual information from the policy, "
+        "then offer your professional advice and recommendations.\n\n"
+        "Instructions:\n"
+        "- Start with factual information directly from the policy\n"
+        "- Then provide your professional assessment and advice\n"
+        "- Clearly separate facts from recommendations using headings\n"
+        "- Be concise but thorough in both sections\n"
+        "- Consider practical implications and user needs\n\n"
+    )
+
+    context_text = "\n\n".join([chunk['text'] for chunk in relevant_chunks[:10]])
+
+    return f"""{base_prompt}
+POLICY CONTENT:
+{context_text}
+
+QUESTION:
+{query}
+
+**Policy Facts:**
+[Provide factual information from the policy]
+
+**Professional Recommendation:**
+[Provide your advice and assessment]"""
+
 def clean_answer_optimized(answer, query):
     answer = answer.strip()
     answer = re.sub(r'\n+', ' ', answer)
     answer = re.sub(r'\s+', ' ', answer)
 
-    if "This information is not available in the provided policy document" in answer:
-        content_before = answer.split("This information is not available")[0].strip()
-        if len(content_before) > 50:
-            answer = content_before
-            logger.info("Removed fallback message as content was found")
+    # For advisory questions, don't remove "not available" messages as harshly
+    query_type = classify_query_type(query)
+    if query_type == "factual":
+        if "This information is not available in the provided policy document" in answer:
+            content_before = answer.split("This information is not available")[0].strip()
+            if len(content_before) > 50:
+                answer = content_before
+                logger.info("Removed fallback message as content was found")
 
     return answer
 
@@ -313,9 +412,8 @@ def analyze_document_json():
     else:  
         return jsonify({'error': 'Unsupported document type'}), 400
 
-    #text = extract_text_from_pdf(pdf_content)
     if not text:
-        return jsonify({'error': 'Could not extract text from PDF'}), 400
+        return jsonify({'error': 'Could not extract text from document'}), 400
     logger.info(f"Extracted text in {time.time() - start_time:.2f}s, length: {len(text)} chars")
 
     start_time = time.time()
@@ -340,6 +438,11 @@ def analyze_document_json():
     def process_query(query):
         try:
             start = time.time()
+            
+            # Classify the query type
+            query_classification = classify_query_type(query)
+            logger.info(f"Query '{query}' classified as: {query_classification}")
+            
             # Pre-filter chunks by keywords to reduce search space
             filtered_chunks = prefilter_chunks_by_keywords(chunks, query)
             # Use cached embeddings for filtered chunks
@@ -348,11 +451,13 @@ def analyze_document_json():
             query_embedding = embedder.encode([query])
             similarities = cosine_similarity(query_embedding, filtered_embeddings)[0]
 
-            # Score and select top 5 chunks
+            # Score and select top chunks (more for advisory questions)
+            top_k = 10 if query_classification in ["advisory", "mixed"] else 5
             scored_chunks = []
             query_words = set(query.lower().split())
             query_lower = query.lower()
             query_type = get_query_type(query)
+            
             for i, chunk in enumerate(filtered_chunks):
                 chunk_lower = chunk.lower()
                 chunk_words = set(chunk_lower.split())
@@ -378,20 +483,30 @@ def analyze_document_json():
                 else:
                     combined_score = similarities[i] * 0.5 + keyword_score * 0.3 + numerical_score * 0.1 + specific_score * 0.1
                 scored_chunks.append((chunk, combined_score))
+                
             scored_chunks.sort(key=lambda x: x[1], reverse=True)
-            top_chunks = [{'text': c[0], 'score': c[1]} for c in scored_chunks[:5]]
+            top_chunks = [{'text': c[0], 'score': c[1]} for c in scored_chunks[:top_k]]
 
             if not top_chunks:
                 return {
                     'query': query,
                     'answer': 'Information not available in the policy.',
                     'confidence': 0.0,
-                    'processing_time': time.time() - start
+                    'processing_time': time.time() - start,
+                    'query_type': query_classification
                 }
 
-            prompt = create_simple_direct_prompt(query, top_chunks)
+            # Create appropriate prompt based on query classification
+            if query_classification == "factual":
+                prompt = create_factual_prompt(query, top_chunks)
+            elif query_classification == "advisory":
+                prompt = create_advisory_prompt(query, top_chunks)
+            else:  # mixed
+                prompt = create_mixed_prompt(query, top_chunks)
+
             start_time = time.time()
-            answer = call_openai_api(prompt)
+            is_advisory = query_classification in ["advisory", "mixed"]
+            answer = call_openai_api(prompt, is_advisory=is_advisory)
             logger.info(f"LLM API call completed in {time.time() - start_time:.2f}s")
             answer = clean_answer_optimized(answer, query)
             avg_score = np.mean([chunk['score'] for chunk in top_chunks])
@@ -401,7 +516,8 @@ def analyze_document_json():
                 'query': query,
                 'answer': answer,
                 'confidence': confidence,
-                'processing_time': time.time() - start
+                'processing_time': time.time() - start,
+                'query_type': query_classification
             }
         except Exception as e:
             logger.error(f"Error processing query '{query}': {e}")
@@ -409,7 +525,8 @@ def analyze_document_json():
                 'query': query,
                 'answer': f'Error processing query: {str(e)}',
                 'confidence': 0.0,
-                'processing_time': 0
+                'processing_time': 0,
+                'query_type': 'error'
             }
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -423,13 +540,15 @@ def analyze_document_json():
         'query': q,
         'answer': 'Error: Query not processed',
         'confidence': 0.0,
-        'processing_time': 0
+        'processing_time': 0,
+        'query_type': 'error'
     }) for q in queries]
 
     answers = [r['answer'] for r in ordered_results]
 
     total_time = time.time() - total_start_time
     logger.info(f"Processed {len(queries)} queries in {total_time:.2f}s")
+    logger.info(f"Query types: {[r['query_type'] for r in ordered_results]}")
     logger.info(f"Answers: {answers}")
 
     return jsonify({"answers": answers})
@@ -440,14 +559,17 @@ def health_check():
         'status': 'healthy',
         'embedder_loaded': embedder is not None,
         'llm_api_configured': GEMINI_API_KEY is not None,
-        'version': '3.0_aggressive_optimized',
+        'version': '4.0_advisory_enabled',
         'features': [
             'embedding_caching',
             'chunk_size_increase',
             'prefilter_chunks',
-            'reduced_top_k',
+            'adaptive_top_k',
             'retry_llm_api',
-            'threadpool_parallelism'
+            'threadpool_parallelism',
+            'query_classification',
+            'advisory_responses',
+            'mixed_mode_support'
         ]
     })
 
