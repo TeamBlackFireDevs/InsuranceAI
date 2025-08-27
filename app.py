@@ -122,7 +122,15 @@ def call_openai_api(prompt, max_retries=3, is_advisory=False):
                 max_tokens=max_tokens
             )  
             if response.choices and len(response.choices) > 0:  
-                return response.choices[0].message.content  
+                choice = response.choices[0]
+                # Support both OpenAI and Gemini response formats
+                if hasattr(choice, "message") and choice.message and getattr(choice.message, "content", None):
+                    return choice.message.content
+                elif hasattr(choice, "text") and choice.text:
+                    return choice.text
+                else:
+                    logging.warning("LLM response had no content")
+                    return "No response generated"
             else:  
                 logging.warning("No response generated from OpenAI API")  
                 return "No response generated"  
@@ -349,6 +357,8 @@ QUESTION:
 [Provide your advice and assessment]"""
 
 def clean_answer_optimized(answer, query):
+    if not answer:
+        return "No response generated"
     answer = answer.strip()
     answer = re.sub(r'\n+', ' ', answer)
     answer = re.sub(r'\s+', ' ', answer)
