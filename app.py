@@ -115,7 +115,7 @@ def call_llm_api(prompt, max_retries=3, is_advisory=False):
             top_p = 0.7 if is_advisory else 0.6
 
             resp = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-2.0-flash",
                 contents=prompt,  # string is fine; SDK wraps it as user content
                 config=types.GenerateContentConfig(
                     temperature=temperature,
