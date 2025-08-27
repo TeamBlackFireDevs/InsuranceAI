@@ -5,8 +5,7 @@ os.environ['SENTENCE_TRANSFORMERS_HOME'] = '/tmp'
 import json
 import requests
 from urllib.parse import urlparse, unquote
-import openai
-from openai import OpenAI
+from google import genai
 import mimetypes
 from docx import Document
 import time
@@ -29,7 +28,7 @@ app = Flask(__name__, static_folder="build/static", template_folder="build")
 
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
-client = OpenAI(api_key=GEMINI_API_KEY, base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 try:
     embedder = SentenceTransformer('all-MiniLM-L6-v2')
@@ -107,40 +106,27 @@ def classify_query_type(query):
     else:
         return "mixed"
 
-def call_openai_api(prompt, max_retries=3, is_advisory=False):  
+def call_llm_api(prompt, max_retries=3, is_advisory=False):  
     for attempt in range(max_retries):  
         try:  
             # Adjust parameters based on query type
             temperature = 0.4 if is_advisory else 0.02
             max_tokens = 500 if is_advisory else 350
             
-            response = client.chat.completions.create(  
-                model="gemini-2.5-flash",  
-                messages=[{"role": "user", "content": prompt}],  
-                temperature=temperature,  
-                top_p=0.7 if is_advisory else 0.6,  
-                max_tokens=max_tokens
-            )  
-            if response.choices and len(response.choices) > 0:  
-                choice = response.choices[0]
-                # Support both OpenAI and Gemini response formats
-                if hasattr(choice, "message") and choice.message and getattr(choice.message, "content", None):
-                    return choice.message.content
-                elif hasattr(choice, "text") and choice.text:
-                    return choice.text
-                else:
-                    logging.warning("LLM response had no content")
-                    return "No response generated"
-            else:  
-                logging.warning("No response generated from OpenAI API")  
-                return "No response generated"  
-        except openai.APIError as e:  
-            logging.warning(f"OpenAI API request failed on attempt {attempt+1}: {e}")  
-            time.sleep(2 ** attempt)  # exponential backoff  
+            response = client.chat.generate(
+                model="gemini-2.5-flash",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=temperature,
+                max_output_tokens=max_tokens,
+                top_p=0.7 if is_advisory else 0.6,
+            )
+
+            # Response text is always accessible via .text
+            return response.text.strip() if response and getattr(response, "text", None) else "No response generated"
         except Exception as e:  
             logging.warning(f"Unexpected error on attempt {attempt+1}: {e}")  
             time.sleep(2 ** attempt)  
-    return "Error: OpenAI API request failed after retries"
+    return "Error: LLM API request failed after retries"
 
 def extract_text_from_pdf(pdf_content):  
     try:  
@@ -516,7 +502,7 @@ def analyze_document_json():
 
             start_time = time.time()
             is_advisory = query_classification in ["advisory", "mixed"]
-            answer = call_openai_api(prompt, is_advisory=is_advisory)
+            answer = call_llm_api(prompt, is_advisory=is_advisory)
             logger.info(f"LLM API call completed in {time.time() - start_time:.2f}s")
             answer = clean_answer_optimized(answer, query)
             avg_score = np.mean([chunk['score'] for chunk in top_chunks])
