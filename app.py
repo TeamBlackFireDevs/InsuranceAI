@@ -367,8 +367,8 @@ def clean_answer_optimized(answer, query):
     if not answer:
         return "No response generated"
     answer = answer.strip()
-    answer = re.sub(r'\n+', ' ', answer)
-    answer = re.sub(r'\s+', ' ', answer)
+    #answer = re.sub(r'\n+', ' ', answer)
+    #answer = re.sub(r'\s+', ' ', answer)
 
     # For advisory questions, don't remove "not available" messages as harshly
     query_type = classify_query_type(query)
