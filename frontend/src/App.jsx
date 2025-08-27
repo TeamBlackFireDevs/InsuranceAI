@@ -126,7 +126,7 @@ export default function App() {
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault();
-                handleAddQuestion();
+                addQuestion();
               }
             }}
             className="flex-1 p-2 border rounded-xl bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-700"
