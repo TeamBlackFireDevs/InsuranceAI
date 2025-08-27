@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { Moon, Sun, Maximize, Trash2, X } from "lucide-react";
+import ReactMarkdown from "react-markdown";
 
 const API_URL = process.env.REACT_APP_API_URL;
 
@@ -177,7 +178,9 @@ export default function App() {
               {questions.map((q, idx) => (
                 <li key={idx} className="bg-white dark:bg-gray-800 p-2 rounded">
                   <p className="font-semibold">Q: {q}</p>
-                  <p className="whitespace-pre-line">A: {answers[idx] || "No answer returned."}</p>
+                  <ReactMarkdown className="prose dark:prose-invert">
+                    {answers[idx] || "No answer returned."}
+                  </ReactMarkdown>
                 </li>
               ))}
             </ul>
