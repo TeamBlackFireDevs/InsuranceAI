@@ -178,7 +178,7 @@ export default function App() {
               {questions.map((q, idx) => (
                 <li key={idx} className="bg-white dark:bg-gray-800 p-2 rounded">
                   <p className="font-semibold">Q: {q}</p>
-                  <ReactMarkdown className="prose dark:prose-invert">
+                  <ReactMarkdown className="prose dark:prose-invert max-w-none">
                     {answers[idx] || "No answer returned."}
                   </ReactMarkdown>
                 </li>
