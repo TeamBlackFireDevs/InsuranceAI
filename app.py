@@ -6,6 +6,7 @@ import json
 import requests
 from urllib.parse import urlparse, unquote
 from google import genai
+from google.genai import types, errors
 import mimetypes
 from docx import Document
 import time
@@ -106,27 +107,47 @@ def classify_query_type(query):
     else:
         return "mixed"
 
-def call_llm_api(prompt, max_retries=3, is_advisory=False):  
-    for attempt in range(max_retries):  
-        try:  
-            # Adjust parameters based on query type
+def call_llm_api(prompt, max_retries=3, is_advisory=False):
+    for attempt in range(max_retries):
+        try:
             temperature = 0.4 if is_advisory else 0.02
             max_tokens = 500 if is_advisory else 350
-            
-            response = client.chat.generate(
-                model="gemini-2.5-flash",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=temperature,
-                max_output_tokens=max_tokens,
-                top_p=0.7 if is_advisory else 0.6,
-            )
+            top_p = 0.7 if is_advisory else 0.6
 
-            # Response text is always accessible via .text
-            return response.text.strip() if response and getattr(response, "text", None) else "No response generated"
-        except Exception as e:  
-            logging.warning(f"Unexpected error on attempt {attempt+1}: {e}")  
-            time.sleep(2 ** attempt)  
-    return "Error: LLM API request failed after retries"
+            resp = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt,  # string is fine; SDK wraps it as user content
+                config=types.GenerateContentConfig(
+                    temperature=temperature,
+                    top_p=top_p,
+                    max_output_tokens=max_tokens,
+                ),
+            )
+            # Primary happy path:
+            if getattr(resp, "text", None):
+                return resp.text.strip()
+
+            # Fallback if no .text (rare):
+            if getattr(resp, "candidates", None):
+                for c in resp.candidates:
+                    if getattr(c, "content", None):
+                        parts = getattr(c.content, "parts", []) or []
+                        for part in parts:
+                            if getattr(part, "text", None):
+                                return part.text.strip()
+
+            logging.warning("No response generated from Gemini API")
+            return "No response generated"
+
+        except errors.APIError as e:
+            logging.warning(f"Gemini API request failed on attempt {attempt+1}: {e}")
+            time.sleep(2 ** attempt)
+        except Exception as e:
+            logging.warning(f"Unexpected error on attempt {attempt+1}: {e}")
+            time.sleep(2 ** attempt)
+
+    return "Error: Gemini API request failed after retries"
+
 
 def extract_text_from_pdf(pdf_content):  
     try:  
