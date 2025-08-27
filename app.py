@@ -111,7 +111,7 @@ def call_llm_api(prompt, max_retries=3, is_advisory=False):
     for attempt in range(max_retries):
         try:
             temperature = 0.4 if is_advisory else 0.02
-            max_tokens = 500 if is_advisory else 350
+            max_tokens = 1000 if is_advisory else 750
             top_p = 0.7 if is_advisory else 0.6
 
             resp = client.models.generate_content(
