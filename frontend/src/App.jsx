@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { Moon, Sun, Maximize, Trash2, X } from "lucide-react";
+import { Moon, Sun, Maximize, Trash2, X, Download } from "lucide-react";
 import ReactMarkdown from "react-markdown";
+import jsPDF from "jspdf";
 
 const API_URL = process.env.REACT_APP_API_URL;
 
@@ -96,6 +97,50 @@ export default function App() {
     setLoading(false);
   };
 
+  // download PDF with results
+  const downloadPDF = () => {
+    const pdf = new jsPDF();
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const margin = 20;
+    const maxWidth = pageWidth - 2 * margin;
+    let yPosition = 30;
+
+    // Title
+    pdf.setFontSize(20);
+    pdf.text("InsuranceAI Analysis Results", margin, yPosition);
+    yPosition += 20;
+
+    // Document name
+    pdf.setFontSize(12);
+    pdf.text(`Document: ${uploadedFile?.name || 'Unknown'}`, margin, yPosition);
+    yPosition += 15;
+
+    // Q&A pairs
+    questions.forEach((question, idx) => {
+      // Check if we need a new page
+      if (yPosition > 250) {
+        pdf.addPage();
+        yPosition = 30;
+      }
+
+      // Question
+      pdf.setFontSize(12);
+      pdf.setFont(undefined, 'bold');
+      const questionLines = pdf.splitTextToSize(`Q${idx + 1}: ${question}`, maxWidth);
+      pdf.text(questionLines, margin, yPosition);
+      yPosition += questionLines.length * 7 + 5;
+
+      // Answer
+      pdf.setFont(undefined, 'normal');
+      const answer = answers[idx] || 'No answer available';
+      const answerLines = pdf.splitTextToSize(`A: ${answer}`, maxWidth);
+      pdf.text(answerLines, margin, yPosition);
+      yPosition += answerLines.length * 7 + 15;
+    });
+
+    pdf.save('insurance-analysis-results.pdf');
+  };
+
   return (
     <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 text-gray-900 dark:bg-neutral-950 dark:text-gray-100">
       {/* Controls */}
@@ -179,7 +224,15 @@ export default function App() {
         {/* Display answers next to questions */}
         {answers.length > 0 && (
           <div className="p-3 border rounded bg-gray-50 dark:bg-gray-700 flex flex-col gap-2">
-            <strong>Answers:</strong>
+            <div className="flex justify-between items-center">
+              <strong>Answers:</strong>
+              <button
+                onClick={downloadPDF}
+                className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-xl shadow flex items-center gap-2 text-sm"
+              >
+                <Download size={16} /> Download PDF 📄
+              </button>
+            </div>
             <ul className="space-y-2">
               {questions.map((q, idx) => (
                 <li key={idx} className="bg-white dark:bg-gray-800 p-2 rounded">
